@@ -1,0 +1,6 @@
+.devcontainer
+.vscode
+chats
+chroma_db
+models_cache
+.env

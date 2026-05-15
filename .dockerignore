@@ -1,0 +1,10 @@
+.git
+.env
+__pycache__
+*.pyc
+.venv
+venv
+chats
+chroma_db
+models_cache
+*.md

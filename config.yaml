@@ -1,0 +1,13 @@
+vault_path: "/vault"
+db_path: "/app/chroma_db"
+embeddings_model: "BAAI/bge-m3"
+reranker_model: "BAAI/bge-reranker-v2-m3"
+llm_model: "t-tech/T-lite-it-2.1:q5_0"
+ollama_url: "http://host.docker.internal:11434"
+chunk_size: 800
+chunk_overlap: 200
+top_k_retrieval: 50
+top_k_final: 12
+min_relevance: 0.01
+bm25_weight: 0.3
+rrf_k: 60

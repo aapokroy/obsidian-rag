@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "obsidian-rag"
+version = "0.1.0"
+description = "Local RAG for Obsidian vault"
+authors = ["You"]
+readme = "README.md"
+package-mode = false
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = ">=0.115.0,<0.116.0"
+uvicorn = ">=0.34.0,<0.35.0"
+chromadb = ">=0.5.0,<0.6.0"
+langchain = ">=0.3.0,<0.4.0"
+langchain-text-splitters = ">=0.3.3,<0.4.0"
+sentence-transformers = ">=3.3.0,<4.0.0"
+transformers = ">=4.44.2,<4.45.0"
+torch = {version = ">=2.5.0,<3.0.0", source = "pytorch-cpu"}
+ollama = ">=0.4.0,<1.0.0"
+pyyaml = ">=6.0,<7.0"
+flashrank = "^0.2.10"
+rank-bm25 = "^0.2.2"
+einops = "^0.8.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Obsidian RAG Chat</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #222222;
+            --bg-tertiary: #2a2a2a;
+            --bg-hover: #333333;
+            --bg-user: #1a4a6e;
+            --bg-assistant: #2d2d2d;
+            --border: #3a3a3a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0a0;
+            --text-muted: #707070;
+            --accent: #5b9bd5;
+            --accent-hover: #4a8ac4;
+            --accent-dim: #3a6a9e;
+            --danger: #e05555;
+            --danger-hover: #c94444;
+            --warning: #d4a84b;
+            --success: #4caf84;
+            --code-bg: #1e1e1e;
+            --code-text: #d4d4d4;
+            --code-accent: #e0a060;
+            --radius-sm: 6px;
+            --radius: 10px;
+            --radius-lg: 14px;
+            --shadow: 0 2px 8px rgba(0,0,0,0.3);
+            --transition: 0.15s ease;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            letter-spacing: -0.01em;
+        }
+        
+        /* Боковая панель */
+        #sidebar {
+            width: 280px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        
+        #sidebar-header {
+            padding: 20px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        #logo {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: -0.02em;
+            margin-bottom: 6px;
+        }
+        
+        #logo-icon {
+            width: 28px;
+            height: 28px;
+            background: var(--accent);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+        
+        .sidebar-btn {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            text-align: left;
+        }
+        
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .btn-primary:hover { 
+            background: var(--accent-hover); 
+            border-color: var(--accent-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(91, 155, 213, 0.25);
+        }
+        
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+        .btn-secondary:hover { 
+            background: var(--bg-hover); 
+            color: var(--text-primary);
+        }
+        
+        .btn-warning {
+            background: transparent;
+            color: var(--warning);
+            border-color: var(--warning);
+            font-size: 11px;
+            padding: 7px 10px;
+        }
+        .btn-warning:hover {
+            background: rgba(212, 168, 75, 0.1);
+            color: #e0b860;
+        }
+        
+        #index-actions {
+            display: flex;
+            gap: 6px;
+        }
+        #index-actions .sidebar-btn {
+            flex: 1;
+            justify-content: center;
+            font-size: 11px;
+        }
+        
+        #reindex-status {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-align: center;
+            min-height: 16px;
+            transition: all var(--transition);
+        }
+        
+        #chat-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 10px;
+        }
+        
+        #chat-list::-webkit-scrollbar {
+            width: 4px;
+        }
+        #chat-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #chat-list::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        
+        .chat-item {
+            padding: 10px 14px;
+            margin-bottom: 2px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            transition: all var(--transition);
+            border: 1px solid transparent;
+        }
+        .chat-item:hover { 
+            background: var(--bg-hover); 
+            border-color: var(--border);
+        }
+        .chat-item.active { 
+            background: var(--accent-dim); 
+            border-color: var(--accent);
+            color: #fff;
+        }
+        .chat-item .chat-title {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 450;
+        }
+        .chat-item .delete-chat {
+            opacity: 0;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px 7px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            transition: all var(--transition);
+            margin-left: 8px;
+        }
+        .chat-item:hover .delete-chat { opacity: 1; }
+        .chat-item .delete-chat:hover { 
+            background: rgba(224, 85, 85, 0.2); 
+            color: var(--danger); 
+        }
+        
+        /* Основная область */
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            background: var(--bg-primary);
+        }
+        
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px 20px;
+            scroll-behavior: smooth;
+        }
+        
+        #messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        #messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #messages::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+        
+        .msg {
+            margin-bottom: 20px;
+            padding: 14px 18px;
+            border-radius: var(--radius-lg);
+            max-width: 80%;
+            line-height: 1.65;
+            animation: fadeIn 0.25s ease;
+            box-shadow: var(--shadow);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .user {
+            background: var(--bg-user);
+            margin-left: auto;
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .assistant {
+            background: var(--bg-assistant);
+            margin-right: auto;
+            border-bottom-left-radius: 4px;
+            border: 1px solid var(--border);
+        }
+        
+        .assistant h1, .assistant h2, .assistant h3, .assistant h4 {
+            margin: 14px 0 8px;
+            color: #eee;
+            font-weight: 600;
+        }
+        .assistant h1 { font-size: 1.3em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+        .assistant h2 { font-size: 1.15em; }
+        .assistant h3 { font-size: 1.05em; }
+        .assistant p { margin: 6px 0; }
+        .assistant ul, .assistant ol { margin: 6px 0; padding-left: 22px; }
+        .assistant li { margin: 3px 0; }
+        .assistant code {
+            background: var(--code-bg);
+            padding: 3px 7px;
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Monaco', 'Menlo', 'JetBrains Mono', monospace;
+            font-size: 0.88em;
+            color: var(--code-accent);
+            border: 1px solid var(--border);
+        }
+        .assistant pre {
+            background: var(--code-bg);
+            padding: 14px 16px;
+            border-radius: var(--radius);
+            overflow-x: auto;
+            margin: 10px 0;
+            border: 1px solid var(--border);
+        }
+        .assistant pre code {
+            background: none;
+            padding: 0;
+            color: var(--code-text);
+            border: none;
+            font-size: 0.85em;
+        }
+        .assistant blockquote {
+            border-left: 3px solid var(--accent);
+            padding: 8px 14px;
+            margin: 10px 0;
+            color: var(--text-secondary);
+            background: rgba(91, 155, 213, 0.05);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+        }
+        .assistant a {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color var(--transition);
+        }
+        .assistant a:hover { border-bottom-color: var(--accent); }
+        .assistant table {
+            border-collapse: collapse;
+            margin: 10px 0;
+            width: 100%;
+            font-size: 0.9em;
+        }
+        .assistant th, .assistant td {
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .assistant th { 
+            background: var(--bg-tertiary); 
+            font-weight: 600;
+            color: #eee;
+        }
+        .assistant tr:hover td { background: rgba(255,255,255,0.02); }
+        .assistant strong { color: #eee; font-weight: 600; }
+        .assistant hr { 
+            border: none; 
+            border-top: 1px solid var(--border); 
+            margin: 16px 0; 
+        }
+        
+        .sources {
+            font-size: 0.82em;
+            color: var(--text-muted);
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }
+        .sources strong { 
+            color: var(--text-secondary); 
+            font-weight: 500;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .sources span { 
+            color: var(--accent); 
+            font-weight: 500;
+        }
+        
+        #input-area {
+            display: flex;
+            padding: 16px 20px;
+            gap: 10px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+        
+        #input {
+            flex: 1;
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 14px;
+            resize: none;
+            font-family: inherit;
+            transition: all var(--transition);
+            line-height: 1.5;
+        }
+        #input:focus { 
+            outline: none; 
+            border-color: var(--accent); 
+            box-shadow: 0 0 0 3px rgba(91, 155, 213, 0.15);
+        }
+        #input::placeholder { color: var(--text-muted); }
+        
+        #send-btn {
+            padding: 12px 18px;
+            border: none;
+            border-radius: var(--radius);
+            background: var(--accent);
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 48px;
+        }
+        #send-btn:hover { 
+            background: var(--accent-hover); 
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(91, 155, 213, 0.3);
+        }
+        #send-btn:disabled { 
+            opacity: 0.4; 
+            cursor: not-allowed; 
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1.1em;
+            background: var(--accent);
+            animation: blink 0.7s infinite;
+            vertical-align: text-bottom;
+            margin-left: 1px;
+            border-radius: 1px;
+        }
+        @keyframes blink { 
+            0%, 100% { opacity: 1; } 
+            50% { opacity: 0; } 
+        }
+        
+        .empty-state {
+            text-align: center;
+            color: var(--text-muted);
+            margin-top: 35vh;
+            user-select: none;
+        }
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+        .empty-state-text {
+            font-size: 15px;
+            font-weight: 450;
+        }
+        
+        /* Стили для progress bar в статусе */
+        .progress-container {
+            margin-top: 4px;
+        }
+        .progress-label {
+            font-size: 10px;
+            margin-bottom: 3px;
+            color: var(--accent);
+        }
+        .progress-bar-bg {
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+            height: 3px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease, background 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <div id="logo">
+                <div id="logo-icon">📚</div>
+                <span>RAG Chat</span>
+            </div>
+            <button class="sidebar-btn btn-primary" onclick="createNewChat()">
+                <span>+</span> Новый чат
+            </button>
+            <div id="index-actions">
+                <button class="sidebar-btn btn-secondary" id="reindex-btn" onclick="startReindex(false)" title="Индексировать только изменённые файлы">
+                    🔄 Обновить
+                </button>
+                <button class="sidebar-btn btn-warning" id="reindex-full-btn" onclick="startReindex(true)" title="Полностью пересчитать все индексы">
+                    🔁 Полный
+                </button>
+            </div>
+            <div id="reindex-status"></div>
+        </div>
+        <div id="chat-list"></div>
+    </div>
+    
+    <div id="main">
+        <div id="messages">
+            <div class="empty-state">
+                <div class="empty-state-icon">💬</div>
+                <div class="empty-state-text">Выберите или создайте чат для начала</div>
+            </div>
+        </div>
+        <div id="input-area" style="display: none;">
+            <textarea id="input" rows="2" placeholder="Задайте вопрос по вашей базе знаний..."
+                      onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); sendMessage()}"></textarea>
+            <button id="send-btn" onclick="sendMessage()">➤</button>
+        </div>
+    </div>
+
+    <script>
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            headerIds: false,
+            mangle: false
+        });
+        
+        let currentChatId = null;
+        let currentAssistantDiv = null;
+        let currentRawText = '';
+
+        // --- Список чатов ---
+
+        async function loadChatList() {
+            try {
+                const response = await fetch('/chats');
+                const chats = await response.json();
+                renderChatList(chats);
+                return chats;
+            } catch (error) {
+                console.error('Ошибка загрузки чатов:', error);
+                return [];
+            }
+        }
+
+        function renderChatList(chats) {
+            const chatList = document.getElementById('chat-list');
+            chatList.innerHTML = '';
+            
+            if (chats.length === 0) {
+                chatList.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 24px; font-size: 13px;">Нет сохранённых чатов</div>';
+                return;
+            }
+            
+            chats.forEach(chat => {
+                const div = document.createElement('div');
+                div.className = `chat-item${chat.id === currentChatId ? ' active' : ''}`;
+                div.onclick = () => switchToChat(chat.id);
+                div.innerHTML = `
+                    <span class="chat-title">${escapeHtml(chat.title || 'Новый чат')}</span>
+                    <span class="delete-chat" onclick="event.stopPropagation(); deleteChat('${chat.id}')">✕</span>
+                `;
+                chatList.appendChild(div);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function createNewChat() {
+            try {
+                const response = await fetch('/chat/new', { method: 'POST' });
+                const chat = await response.json();
+                
+                currentChatId = chat.id;
+                document.getElementById('messages').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">💬</div>
+                        <div class="empty-state-text">Начните диалог</div>
+                    </div>`;
+                document.getElementById('input-area').style.display = 'flex';
+                document.getElementById('input').focus();
+                await loadChatList();
+            } catch (error) {
+                console.error('Ошибка создания чата:', error);
+            }
+        }
+
+        async function switchToChat(chatId) {
+            currentChatId = chatId;
+            document.getElementById('input-area').style.display = 'flex';
+            document.getElementById('input').focus();
+            await loadChatList();
+            await loadChatHistory(chatId);
+        }
+
+        async function loadChatHistory(chatId) {
+            try {
+                const response = await fetch(`/chat/${chatId}`);
+                const data = await response.json();
+                
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.innerHTML = '';
+                
+                if (data.messages.length === 0) {
+                    messagesDiv.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">💬</div>
+                            <div class="empty-state-text">Начните диалог</div>
+                        </div>`;
+                    return;
+                }
+                
+                data.messages.forEach(msg => {
+                    addMessageStatic(msg.role, msg.content);
+                });
+                
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } catch (error) {
+                console.error('Ошибка загрузки истории:', error);
+            }
+        }
+
+        async function deleteChat(chatId) {
+            if (!confirm('Удалить этот чат безвозвратно?')) return;
+            
+            try {
+                await fetch(`/chat/${chatId}`, { method: 'DELETE' });
+                
+                if (currentChatId === chatId) {
+                    currentChatId = null;
+                    document.getElementById('messages').innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">💬</div>
+                            <div class="empty-state-text">Выберите или создайте чат для начала</div>
+                        </div>`;
+                    document.getElementById('input-area').style.display = 'none';
+                }
+                
+                await loadChatList();
+            } catch (error) {
+                console.error('Ошибка удаления чата:', error);
+            }
+        }
+
+        // --- Сообщения ---
+
+        function renderMarkdown(text) {
+            try {
+                return marked.parse(text);
+            } catch (e) {
+                return escapeHtml(text);
+            }
+        }
+
+        function addMessageStatic(role, content) {
+            const div = document.createElement('div');
+            div.className = `msg ${role}`;
+            
+            if (role === 'assistant') {
+                div.innerHTML = renderMarkdown(content);
+            } else {
+                div.textContent = content;
+            }
+            
+            document.getElementById('messages').appendChild(div);
+        }
+
+        function isUserAtBottom() {
+            const messagesDiv = document.getElementById('messages');
+            const threshold = 100;
+            return messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight < threshold;
+        }
+
+        function scrollToBottomIfNeeded() {
+            if (isUserAtBottom()) {
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('input');
+            const button = document.getElementById('send-btn');
+            const question = input.value.trim();
+
+            if (!question || !currentChatId) return;
+
+            addMessageStatic('user', question);
+            
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            input.value = '';
+            input.disabled = true;
+            button.disabled = true;
+
+            const assistantDiv = document.createElement('div');
+            assistantDiv.className = 'msg assistant';
+            document.getElementById('messages').appendChild(assistantDiv);
+            
+            const cursor = document.createElement('span');
+            cursor.className = 'cursor';
+            assistantDiv.appendChild(cursor);
+            
+            currentAssistantDiv = assistantDiv;
+            currentRawText = '';
+
+            try {
+                const response = await fetch('/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        question: question,
+                        chat_id: currentChatId
+                    })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.slice(6));
+                            handleStreamEvent(data);
+                        }
+                    }
+                }
+            } catch (error) {
+                currentAssistantDiv.innerHTML = '<p style="color: var(--danger);">❌ Ошибка соединения с сервером.</p>';
+            }
+
+            const cursorEl = currentAssistantDiv.querySelector('.cursor');
+            if (cursorEl) cursorEl.remove();
+
+            await loadChatList();
+
+            input.disabled = false;
+            button.disabled = false;
+            input.focus();
+        }
+
+        function handleStreamEvent(data) {
+            if (data.type === 'token') {
+                currentRawText += data.content;
+                const cursor = currentAssistantDiv.querySelector('.cursor');
+                currentAssistantDiv.innerHTML = renderMarkdown(currentRawText);
+                if (cursor) {
+                    currentAssistantDiv.appendChild(cursor);
+                } else {
+                    const newCursor = document.createElement('span');
+                    newCursor.className = 'cursor';
+                    currentAssistantDiv.appendChild(newCursor);
+                }
+                scrollToBottomIfNeeded();
+            } 
+            else if (data.type === 'sources' && data.content.length > 0) {
+                const srcDiv = document.createElement('div');
+                srcDiv.className = 'sources';
+                srcDiv.innerHTML = '<strong>📎 Источники</strong><br>' +
+                    data.content.map((s, i) =>
+                        `${i+1}. <span>${escapeHtml(s.title)}</span> <span style="color: var(--text-muted); font-weight: 400;">(${s.relevance})</span>`
+                    ).join('<br>');
+                
+                const cursor = currentAssistantDiv.querySelector('.cursor');
+                if (cursor) {
+                    currentAssistantDiv.insertBefore(srcDiv, cursor);
+                } else {
+                    currentAssistantDiv.appendChild(srcDiv);
+                }
+                scrollToBottomIfNeeded();
+            }
+            else if (data.type === 'error') {
+                currentAssistantDiv.innerHTML = `<p style="color: var(--danger);">${escapeHtml(data.content)}</p>`;
+                scrollToBottomIfNeeded();
+            }
+        }
+
+        // --- Переиндексация ---
+
+        function getReindexButtons() {
+            return {
+                incremental: document.getElementById('reindex-btn'),
+                full: document.getElementById('reindex-full-btn')
+            };
+        }
+
+        function disableReindexButtons() {
+            const btns = getReindexButtons();
+            btns.incremental.disabled = true;
+            btns.full.disabled = true;
+        }
+
+        function enableReindexButtons() {
+            const btns = getReindexButtons();
+            btns.incremental.disabled = false;
+            btns.full.disabled = false;
+        }
+
+        function showReindexProgress() {
+            const statusDiv = document.getElementById('reindex-status');
+            statusDiv.innerHTML = `
+                <div class="progress-container">
+                    <div class="progress-label" id="reindex-label">Запуск...</div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="reindex-bar" style="width: 0%; background: var(--accent);"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateReindexProgress(data) {
+            const label = document.getElementById('reindex-label');
+            const bar = document.getElementById('reindex-bar');
+            
+            if (!label || !bar) return;
+            
+            const pct = Math.round(data.progress * 100);
+            label.textContent = data.message || data.stage;
+            bar.style.width = `${pct}%`;
+            
+            if (data.stage === 'done') {
+                bar.style.background = 'var(--success)';
+                label.style.color = 'var(--success)';
+                enableReindexButtons();
+                
+                setTimeout(() => {
+                    document.getElementById('reindex-status').innerHTML = '';
+                }, 4000);
+                
+                return true; // Завершено
+            } else if (data.stage === 'error') {
+                bar.style.background = 'var(--danger)';
+                label.style.color = 'var(--danger)';
+                label.textContent = data.message || 'Ошибка индексации';
+                enableReindexButtons();
+                return true; // Завершено с ошибкой
+            }
+            
+            return false; // Ещё выполняется
+        }
+
+        async function startReindex(fullRebuild) {
+            const mode = fullRebuild ? 'ПОЛНУЮ' : 'инкрементальную';
+            const confirmMsg = fullRebuild 
+                ? 'Запустить ПОЛНУЮ переиндексацию? Все индексы будут пересчитаны заново. Это может занять много времени.'
+                : 'Запустить инкрементальную индексацию? Будут обработаны только изменённые файлы.';
+            
+            if (!confirm(confirmMsg)) return;
+            
+            const endpoint = fullRebuild ? '/reindex/full' : '/reindex';
+            
+            showReindexProgress();
+            disableReindexButtons();
+            
+            try {
+                const response = await fetch(endpoint, { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'already_running') {
+                    updateReindexProgress({
+                        stage: 'error',
+                        message: 'Индексация уже выполняется',
+                        progress: 0
+                    });
+                    return;
+                }
+                
+                listenToReindexProgress();
+                
+            } catch (error) {
+                updateReindexProgress({
+                    stage: 'error',
+                    message: 'Ошибка запуска',
+                    progress: 0
+                });
+            }
+        }
+
+        function listenToReindexProgress() {
+            const eventSource = new EventSource('/reindex/stream');
+            
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const done = updateReindexProgress(data);
+                
+                if (done) {
+                    eventSource.close();
+                }
+            };
+            
+            eventSource.onerror = () => {
+                eventSource.close();
+                enableReindexButtons();
+                updateReindexProgress({
+                    stage: 'error',
+                    message: 'Соединение прервано',
+                    progress: 0
+                });
+            };
+        }
+
+        // --- Инициализация ---
+
+        (async () => {
+            const chats = await loadChatList();
+            if (chats.length > 0) {
+                switchToChat(chats[0].id);
+            }
+        })();
+    </script>
+</body>
+</html>
