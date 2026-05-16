@@ -9,17 +9,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_HOST=http://host.docker.internal:11434
-      - VAULT_PATH=/vault
-      - DB_PATH=/app/chroma_db
       - CHROMA_TELEMETRY_IMPL=none
-      - CHROMA_OTEL_GRANULARITY=none
-      - TOKENIZERS_PARALLELISM=false
-      - MKL_THREADING_LAYER=GNU
     volumes:
       - ${VAULT_PATH:-./vault}:/vault:ro
       - ./chroma_db:/app/chroma_db
-      - ./models_cache:/root/.cache/huggingface
       - ./chats:/app/chats
     extra_hosts:
       - "host.docker.internal:host-gateway"

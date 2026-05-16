@@ -2,81 +2,94 @@
 
 Локальный RAG-чат для базы знаний Obsidian с гибридным поиском, реранкингом и стримингом ответов.
 
+> ⚠️ **Vibe-coded проект.** Этот код почти полностью написан через общение с AI.
+
 ## Возможности
 
-- **Чат с базой знаний** — задаёшь вопрос, получаешь ответ на основе заметок
+- **Чат с базой знаний Obsidian** — задаёшь вопрос, получаешь ответ на основе заметок
 - **Гибридный поиск** — BM25 + векторный поиск + Reciprocal Rank Fusion
-- **Реранкинг** — BGE-reranker для точного отбора релевантных фрагментов
+- **Реранкинг** — отдельный микро-сервер на Nemotron 1B с MPS-ускорением
 - **Стриминг ответов** — текст генерируется посимвольно, как в ChatGPT
 - **История чатов** — сохраняется на диск, переживает перезапуски
 - **Инкрементальная индексация** — только изменённые файлы, не пересчитывает всё
 - **Поддержка Markdown** — ответы с форматированием, кодом, таблицами
-- **Полностью локально** — все модели работают на твоём Mac
+- **Полностью локально** — LLM, эмбеддинги и реранкер работают на твоём Mac
 
 ## Архитектура
 
 ```
-Obsidian Vault (.md)
-        │
-        ▼
-[Индексатор: чанки + BM25 + ChromaDB]
-        │
-        ▼
-[FastAPI сервер]
-  ├─ /stream — стриминг ответов с SSE
-  ├─ /reindex — инкрементальная индексация
-  ├─ /reindex/full — полная переиндексация
-  ├─ /chats — управление историей чатов
-  └─ /chat_ui.html — веб-интерфейс
-        │
-        ▼
-[Ollama (нативно на Mac)]
-  └─ LLM: T-lite-it-2.1 / qwen2.5 / gemma4
+┌─────────────────────────────────────────────┐
+│  Mac (хост)                                 │
+│                                             │
+│  ┌──────────────┐  ┌─────────────────────┐  │
+│  │  LM Studio   │  │  rerank-server      │  │
+│  │  LLM + Emb.  │  │  (Nemotron, MPS)    │  │
+│  │  :1234       │  │  :8001              │  │
+│  └──────┬───────┘  └──────────┬──────────┘  │
+│         │                     │             │
+│  ┌──────┴─────────────────────┴──────────┐  │
+│  │         Docker                         │  │
+│  │  ┌──────────────────────────────────┐  │  │
+│  │  │  FastAPI server                  │  │  │
+│  │  │  ChromaDB + BM25                 │  │  │
+│  │  │  :8000                           │  │  │
+│  │  └──────────────────────────────────┘  │  │
+│  └────────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
 ```
 
-## Стек
+## Стек (2026)
 
-| Компонент | Технология |
-|-----------|------------|
-| Сервер | FastAPI + uvicorn |
-| Векторная БД | ChromaDB |
-| Эмбеддинги | Sentence Transformers (multilingual-e5) |
-| Гибридный поиск | BM25 (rank-bm25) + RRF |
-| Реранкер | BGE-reranker-v2-m3 (CrossEncoder) |
-| LLM | Ollama (T-lite-it-2.1) |
-| Чанкинг | LangChain MarkdownTextSplitter |
-| Управление зависимостями | Poetry |
+| Компонент | Технология | Модель |
+|-----------|------------|--------|
+| LLM | LM Studio (OpenAI API) | `t-lite-it-2.1` (8B, Q5_K_M) |
+| Эмбеддинги | LM Studio API | `text-embedding-user-bge-m3` |
+| Реранкер | FastAPI + Transformers (MPS) | `nvidia/Llama-Nemotron-Rerank-1B-v2` |
+| Векторная БД | ChromaDB | — |
+| Гибридный поиск | BM25 + RRF | — |
+| Чанкинг | LangChain MarkdownTextSplitter | — |
+| Сервер | FastAPI + uvicorn | — |
+| Зависимости | Poetry | — |
 
 ## Быстрый старт
 
-### 1. Установи Ollama (нативно на Mac)
+### 1. Установи LM Studio
+
+Скачай с [lmstudio.ai](https://lmstudio.ai), установи как обычное приложение Mac.
+
+### 2. Скачай модели в LM Studio
+
+- **LLM**: найди `t-lite-it-2.1` → выбери `Q5_K_M` (~5.9 ГБ)
+- **Embeddings**: найди `text-embedding-user-bge-m3` → выбери `Q4_K_M` (~2.2 ГБ)
+
+### 3. Запусти серверы LM Studio
+
+Вкладка **Developer** (</>):
+- Выбери LLM-модель → **GPU Offload: Max** → **Context Length: 8192** → **Start Server**
+- Embeddings-модель загрузится автоматически при запросе
+
+### 4. Запусти реранк-сервер
 
 ```bash
-brew install ollama
-ollama serve  # в отдельном терминале
-ollama pull t-tech/T-lite-it-2.1:q5_0
+cd rerank-server
+source venv/bin/activate
+pip install -r requirements.txt
+python rerank_server.py
 ```
 
-### 2. Клонируй репозиторий
-
-```bash
-git clone https://github.com/aapokroy/obsidian-rag.git
-cd obsidian-rag
-```
-
-### 3. Настрой .env
+### 5. Настрой .env
 
 ```bash
 echo "VAULT_PATH=/Users/you/ObsidianVault" > .env
 ```
 
-### 4. Запусти
+### 6. Запусти RAG-сервер
 
 ```bash
 docker compose up -d
 ```
 
-### 5. Открой в браузере
+### 7. Открой в браузере
 
 ```
 http://localhost:8000
@@ -85,14 +98,25 @@ http://localhost:8000
 ## Конфигурация (config.yaml)
 
 ```yaml
+# Пути
 vault_path: "/vault"
 db_path: "/app/chroma_db"
-embeddings_model: "intfloat/multilingual-e5-small"
-reranker_model: "BAAI/bge-reranker-v2-m3"
-llm_model: "t-tech/T-lite-it-2.1:q5_0"
-ollama_url: "http://host.docker.internal:11434"
+
+# URL-ы сервисов
+llm_url: "http://host.docker.internal:1234/v1"
+embeddings_url: "http://host.docker.internal:1234/v1/embeddings"
+reranker_url: "http://host.docker.internal:8001/rerank"
+
+# Модели
+llm_model: "t-lite-it-2.1"
+embeddings_model: "text-embedding-user-bge-m3"
+reranker_model: "nvidia/Llama-Nemotron-Rerank-1B-v2"
+
+# Индексация
 chunk_size: 600
 chunk_overlap: 100
+
+# Поиск
 top_k_retrieval: 50
 top_k_final: 12
 min_relevance: 0.01
@@ -100,44 +124,52 @@ bm25_weight: 0.3
 rrf_k: 60
 ```
 
-## Эндпоинты API
+## Структура проекта
 
-| Метод | Путь | Описание |
-|-------|------|----------|
-| GET | `/` | Веб-интерфейс |
-| POST | `/stream` | Стриминг ответа с SSE |
-| GET | `/chats` | Список чатов |
-| POST | `/chat/new` | Новый чат |
-| GET | `/chat/{id}` | История чата |
-| DELETE | `/chat/{id}` | Удалить чат |
-| POST | `/reindex` | Инкрементальная индексация |
-| POST | `/reindex/full` | Полная переиндексация |
-| GET | `/reindex/stream` | SSE-поток прогресса индексации |
+```
+obsidian-rag/
+├── server.py              # Точка входа
+├── lib/                   # Библиотека
+│   ├── config.py          # Pydantic-конфиг
+│   ├── chat_store.py      # Хранение чатов
+│   ├── embeddings.py      # Эмбеддинги через API
+│   ├── reranker.py        # Реранкинг через API
+│   ├── retriever.py       # Гибридный поиск
+│   ├── indexer.py         # Индексация
+│   └── prompt.py          # Сборка промпта
+├── rerank-server/         # Микро-сервер реранкера
+│   └── rerank_server.py
+├── config.yaml
+├── chat_ui.html
+├── docker-compose.yml
+├── Dockerfile
+└── pyproject.toml
+```
 
-## Выбор моделей
+## Выбор моделей (альтернативы)
 
-### LLM (через Ollama)
+### LLM
 
-| Модель | Размер | Скорость | Качество русского |
-|--------|--------|----------|-------------------|
-| `t-tech/T-lite-it-2.1:q5_0` | ~5.7 GB | ⚡⚡⚡ | ✅ Отличное |
-| `qwen2.5:14b` | ~8.9 GB | ⚡⚡ | ✅ Отличное |
-| `gemma4:e4b` | ~5 GB | ⚡⚡⚡ | ✅ Хорошее |
+| Модель | Размер | Скорость | Русский |
+|--------|--------|----------|---------|
+| `t-lite-it-2.1` (Q5_K_M) | ~5.9 ГБ | ⚡⚡⚡ | ✅ Отличное |
+| `qwen2.5:14b` | ~8.9 ГБ | ⚡⚡ | ✅ Отличное |
+| `gemma4:e4b` | ~5 ГБ | ⚡⚡⚡ | ✅ Хорошее |
 
 ### Эмбеддинги
 
-| Модель | Размер | Контекст | Рекомендация |
-|--------|--------|----------|--------------|
-| `multilingual-e5-small` | ~470 MB | 512 токенов | Быстро, хорошее качество |
-| `multilingual-e5-large` | ~2.2 GB | 512 токенов | Точнее, но медленнее |
-| `BAAI/bge-m3` | ~2.2 GB | 8192 токенов | Длинные документы |
+| Модель | Размер | Контекст |
+|--------|--------|----------|
+| `text-embedding-user-bge-m3` | ~2.2 ГБ | 8192 токенов |
+| `multilingual-e5-large` | ~2.1 ГБ | 514 токенов |
+| `enbeddrus` | ~0.4 ГБ | 512 токенов |
 
 ### Реранкер
 
-| Модель | Скорость | Качество |
-|--------|----------|----------|
-| `BAAI/bge-reranker-v2-m3` | 3-5 сек | Отличное |
-| `ms-marco-MultiBERT-L-12` (FlashRank) | 1-2 сек | Среднее для русского |
+| Модель | Размер | Скорость (MPS) |
+|--------|--------|----------------|
+| `nvidia/Llama-Nemotron-Rerank-1B-v2` | ~2.2 ГБ | ~0.1 сек/чанк |
+| `BAAI/bge-reranker-v2-m3` | ~1.2 ГБ | ~0.05 сек/чанк |
 
 ## Разработка
 
@@ -148,7 +180,9 @@ poetry install
 # Генерация lock-файла
 poetry lock
 
-# Локальный запуск (без Docker)
-poetry shell
-python server.py
+# Сборка Docker
+docker compose build
+
+# Запуск
+docker compose up -d
 ```

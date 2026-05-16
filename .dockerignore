@@ -6,5 +6,6 @@ __pycache__
 venv
 chats
 chroma_db
-models_cache
 *.md
+rerank-server
+poetry.lock

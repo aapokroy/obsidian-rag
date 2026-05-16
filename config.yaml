@@ -1,11 +1,22 @@
+# Пути
 vault_path: "/vault"
 db_path: "/app/chroma_db"
-embeddings_model: "BAAI/bge-m3"
-reranker_model: "BAAI/bge-reranker-v2-m3"
-llm_model: "t-tech/T-lite-it-2.1:q5_0"
-ollama_url: "http://host.docker.internal:11434"
-chunk_size: 800
-chunk_overlap: 200
+
+# URL-ы сервисов
+llm_url: "http://host.docker.internal:1234/v1"
+embeddings_url: "http://host.docker.internal:1234/v1/embeddings"
+reranker_url: "http://host.docker.internal:8001/rerank"
+
+# Модели
+llm_model: "t-lite-it-2.1"
+embeddings_model: "text-embedding-user-bge-m3"
+reranker_model: "nvidia/Llama-Nemotron-Rerank-1B-v2"
+
+# Индексация
+chunk_size: 600
+chunk_overlap: 100
+
+# Поиск
 top_k_retrieval: 50
 top_k_final: 12
 min_relevance: 0.01

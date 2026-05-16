@@ -19,11 +19,15 @@ RUN curl -sSL https://install.python-poetry.org | python3 - && \
 # Копируем файлы зависимостей
 COPY pyproject.toml poetry.lock ./
 
-# Установка зависимостей с кэшированием 
-RUN --mount=type=cache,target=/tmp/poetry_cache,uid=1000,gid=1000,mode=0755 poetry install --no-interaction --no-ansi --no-root
+# Установка зависимостей
+RUN --mount=type=cache,target=/tmp/poetry_cache,uid=1000,gid=1000,mode=0755 \
+    poetry install --no-interaction --no-ansi --no-root
 
 # Копируем код приложения
-COPY . .
+COPY lib/ ./lib/
+COPY server.py ./
+COPY chat_ui.html ./
+COPY config.yaml ./
 
 # Порт для FastAPI
 EXPOSE 8000
