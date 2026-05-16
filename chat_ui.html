@@ -448,7 +448,6 @@
             font-weight: 450;
         }
         
-        /* Стили для progress bar в статусе */
         .progress-container {
             margin-top: 4px;
         }
@@ -512,14 +511,16 @@
             breaks: true,
             gfm: true,
             headerIds: false,
-            mangle: false
+            mangle: false,
         });
         
         let currentChatId = null;
         let currentAssistantDiv = null;
         let currentRawText = '';
 
-        // --- Список чатов ---
+        // ============================================================
+        // Список чатов
+        // ============================================================
 
         async function loadChatList() {
             try {
@@ -537,18 +538,18 @@
             const chatList = document.getElementById('chat-list');
             chatList.innerHTML = '';
             
-            if (chats.length === 0) {
+            if (!chats || chats.length === 0) {
                 chatList.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 24px; font-size: 13px;">Нет сохранённых чатов</div>';
                 return;
             }
             
             chats.forEach(chat => {
                 const div = document.createElement('div');
-                div.className = `chat-item${chat.id === currentChatId ? ' active' : ''}`;
-                div.onclick = () => switchToChat(chat.id);
+                div.className = `chat-item${chat.chat_id === currentChatId ? ' active' : ''}`;
+                div.onclick = () => switchToChat(chat.chat_id);
                 div.innerHTML = `
-                    <span class="chat-title">${escapeHtml(chat.title || 'Новый чат')}</span>
-                    <span class="delete-chat" onclick="event.stopPropagation(); deleteChat('${chat.id}')">✕</span>
+                    <span class="chat-title">${escapeHtml(chat.title || 'Без названия')}</span>
+                    <span class="delete-chat" onclick="event.stopPropagation(); deleteChat('${chat.chat_id}')">✕</span>
                 `;
                 chatList.appendChild(div);
             });
@@ -565,7 +566,7 @@
                 const response = await fetch('/chat/new', { method: 'POST' });
                 const chat = await response.json();
                 
-                currentChatId = chat.id;
+                currentChatId = chat.chat_id;
                 document.getElementById('messages').innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">💬</div>
@@ -589,13 +590,13 @@
 
         async function loadChatHistory(chatId) {
             try {
-                const response = await fetch(`/chat/${chatId}`);
+                const response = await fetch(`/chat/${chatId}/messages`);  // ← было /chat/${chatId}
                 const data = await response.json();
                 
                 const messagesDiv = document.getElementById('messages');
                 messagesDiv.innerHTML = '';
                 
-                if (data.messages.length === 0) {
+                if (!data || data.length === 0) {
                     messagesDiv.innerHTML = `
                         <div class="empty-state">
                             <div class="empty-state-icon">💬</div>
@@ -604,8 +605,8 @@
                     return;
                 }
                 
-                data.messages.forEach(msg => {
-                    addMessageStatic(msg.role, msg.content);
+                data.forEach(msg => {
+                    addMessageStatic(msg.role, msg.text);
                 });
                 
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -636,7 +637,9 @@
             }
         }
 
-        // --- Сообщения ---
+        // ============================================================
+        // Сообщения
+        // ============================================================
 
         function renderMarkdown(text) {
             try {
@@ -704,10 +707,15 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        question: question,
-                        chat_id: currentChatId
-                    })
+                        query: question,
+                        chat_id: currentChatId,
+                    }),
                 });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => null);
+                    throw new Error(errorData?.detail || `HTTP ${response.status}`);
+                }
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -723,13 +731,18 @@
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
-                            const data = JSON.parse(line.slice(6));
-                            handleStreamEvent(data);
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleStreamEvent(data);
+                            } catch (e) {
+                                console.error('Ошибка парсинга SSE:', e);
+                            }
                         }
                     }
                 }
             } catch (error) {
-                currentAssistantDiv.innerHTML = '<p style="color: var(--danger);">❌ Ошибка соединения с сервером.</p>';
+                console.error('Ошибка стрима:', error);
+                currentAssistantDiv.innerHTML = `<p style="color: var(--danger);">❌ ${escapeHtml(error.message)}</p>`;
             }
 
             const cursorEl = currentAssistantDiv.querySelector('.cursor');
@@ -756,12 +769,12 @@
                 }
                 scrollToBottomIfNeeded();
             } 
-            else if (data.type === 'sources' && data.content.length > 0) {
+            else if (data.type === 'sources' && data.content && data.content.length > 0) {
                 const srcDiv = document.createElement('div');
                 srcDiv.className = 'sources';
                 srcDiv.innerHTML = '<strong>📎 Источники</strong><br>' +
                     data.content.map((s, i) =>
-                        `${i+1}. <span>${escapeHtml(s.title)}</span> <span style="color: var(--text-muted); font-weight: 400;">(${s.relevance})</span>`
+                        `${i + 1}. <span>${escapeHtml(s.document_path)}</span> <span style="color: var(--text-muted); font-weight: 400;">(${(s.relevance * 100).toFixed(1)}%)</span>`
                     ).join('<br>');
                 
                 const cursor = currentAssistantDiv.querySelector('.cursor');
@@ -778,12 +791,14 @@
             }
         }
 
-        // --- Переиндексация ---
+        // ============================================================
+        // Переиндексация
+        // ============================================================
 
         function getReindexButtons() {
             return {
                 incremental: document.getElementById('reindex-btn'),
-                full: document.getElementById('reindex-full-btn')
+                full: document.getElementById('reindex-full-btn'),
             };
         }
 
@@ -815,13 +830,12 @@
             const label = document.getElementById('reindex-label');
             const bar = document.getElementById('reindex-bar');
             
-            if (!label || !bar) return;
+            if (!label || !bar) return false;
             
-            const pct = Math.round(data.progress * 100);
-            label.textContent = data.message || data.stage;
-            bar.style.width = `${pct}%`;
+            label.textContent = data.message || data.status;
             
-            if (data.stage === 'done') {
+            if (data.status === 'done') {
+                bar.style.width = '100%';
                 bar.style.background = 'var(--success)';
                 label.style.color = 'var(--success)';
                 enableReindexButtons();
@@ -830,16 +844,20 @@
                     document.getElementById('reindex-status').innerHTML = '';
                 }, 4000);
                 
-                return true; // Завершено
-            } else if (data.stage === 'error') {
+                return true;
+            } else if (data.status === 'error') {
                 bar.style.background = 'var(--danger)';
                 label.style.color = 'var(--danger)';
                 label.textContent = data.message || 'Ошибка индексации';
                 enableReindexButtons();
-                return true; // Завершено с ошибкой
+                return true;
+            } else if (data.status === 'running') {
+                bar.style.width = '70%';
+                bar.style.background = 'var(--accent)';
+                label.style.color = 'var(--accent)';
             }
             
-            return false; // Ещё выполняется
+            return false;
         }
 
         async function startReindex(fullRebuild) {
@@ -861,9 +879,8 @@
                 
                 if (data.status === 'already_running') {
                     updateReindexProgress({
-                        stage: 'error',
+                        status: 'error',
                         message: 'Индексация уже выполняется',
-                        progress: 0
                     });
                     return;
                 }
@@ -872,9 +889,8 @@
                 
             } catch (error) {
                 updateReindexProgress({
-                    stage: 'error',
+                    status: 'error',
                     message: 'Ошибка запуска',
-                    progress: 0
                 });
             }
         }
@@ -883,11 +899,15 @@
             const eventSource = new EventSource('/reindex/stream');
             
             eventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                const done = updateReindexProgress(data);
-                
-                if (done) {
-                    eventSource.close();
+                try {
+                    const data = JSON.parse(event.data);
+                    const done = updateReindexProgress(data);
+                    
+                    if (done) {
+                        eventSource.close();
+                    }
+                } catch (e) {
+                    console.error('Ошибка парсинга прогресса:', e);
                 }
             };
             
@@ -895,19 +915,20 @@
                 eventSource.close();
                 enableReindexButtons();
                 updateReindexProgress({
-                    stage: 'error',
+                    status: 'error',
                     message: 'Соединение прервано',
-                    progress: 0
                 });
             };
         }
 
-        // --- Инициализация ---
+        // ============================================================
+        // Инициализация
+        // ============================================================
 
         (async () => {
             const chats = await loadChatList();
             if (chats.length > 0) {
-                switchToChat(chats[0].id);
+                switchToChat(chats[0].chat_id);
             }
         })();
     </script>

@@ -1,6 +1,5 @@
 .devcontainer
 .vscode
-chats
-chroma_db
+data
 .env
 venv

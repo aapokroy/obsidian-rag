@@ -4,8 +4,6 @@ __pycache__
 *.pyc
 .venv
 venv
-chats
-chroma_db
 *.md
 rerank-server
-poetry.lock
+data

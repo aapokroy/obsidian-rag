@@ -118,7 +118,7 @@ chunk_overlap: 100
 
 # Поиск
 top_k_retrieval: 50
-top_k_final: 12
+top_k_rerank: 12
 min_relevance: 0.01
 bm25_weight: 0.3
 rrf_k: 60

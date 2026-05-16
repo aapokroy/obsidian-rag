@@ -15,14 +15,16 @@ priority = "explicit"
 python = "^3.11"
 fastapi = ">=0.115.0,<0.116.0"
 uvicorn = ">=0.34.0,<0.35.0"
-chromadb = ">=0.5.0,<0.6.0"
 langchain-text-splitters = ">=0.3.3,<0.4.0"
 torch = {version = ">=2.5.0,<3.0.0", source = "pytorch-cpu"}
 pyyaml = ">=6.0,<7.0"
-rank-bm25 = "^0.2.2"
 openai = "^2.36.0"
 requests = "^2.34.2"
-pydantic-settings = "^2.14.1"
+pydantic = "^2.13.4"
+pysqlite3 = "^0.6.0"
+sqlite-vec = "^0.1.9"
+more-itertools = "^11.0.2"
+numpy = "^2.4.5"
 
 [build-system]
 requires = ["poetry-core"]

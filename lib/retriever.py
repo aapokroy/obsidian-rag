@@ -1,95 +1,132 @@
-"""Гибридный поиск: BM25 + векторный + RRF."""
+"""Гибридный поиск: BM25 + векторный с RRF-фьюжном."""
 
-import re
+import struct
+import sqlite3
+
 import numpy as np
 
+from lib.config import config
+from lib.db.database import Database
+from lib.embedder import Embedder
+from lib.schema import RetrieveResultItem
 
-def tokenize(text: str) -> list[str]:
-    return re.findall(r'\w+', text.lower())
 
+class Retriever:
+    """Гибридный ретривер: BM25 (FTS5) + векторный (sqlite-vec) с RRF."""
 
-def retrieve_context_hybrid(
-    question: str,
-    collection,
-    bm25,
-    bm25_chunks,
-    embeddings_url: str,
-    embeddings_model: str,
-    top_k: int = 30,
-    bm25_weight: float = 0.3,
-    rrf_k: int = 60
-) -> list[dict]:
-    """Гибридный поиск."""
-    from lib.embeddings import get_embeddings
-    
-    if collection is None:
-        return []
-    
-    query_embedding = get_embeddings(embeddings_url, embeddings_model, [question])[0].tolist()
+    def __init__(
+        self,
+        db: Database,
+        embedder: Embedder,
+        top_k: int | None = None,
+        bm25_weight: float | None = None,
+        rrf_k: int | None = None,
+    ) -> None:
+        self.db = db
+        self.embedder = embedder
+        self.top_k = top_k or config.search.top_k_retrieval
+        self.bm25_weight = bm25_weight or config.search.bm25_weight
+        self.rrf_k = rrf_k or config.search.rrf_k
 
-    vector_results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k * 2,
-        include=["documents", "metadatas", "distances"]
-    )
-    
-    bm25_scores = []
-    if bm25 is not None:
-        tokenized_query = tokenize(question)
-        bm25_scores = list(bm25.get_scores(tokenized_query))
-    
-    vector_weight = 1.0 - bm25_weight
-    
-    chunk_scores = {}
-    
-    for rank, (doc, meta, dist) in enumerate(zip(
-        vector_results["documents"][0],
-        vector_results["metadatas"][0],
-        vector_results["distances"][0]
-    )):
-        chunk_key = f"{meta.get('source', '')}_{meta.get('chunk_index', 0)}"
-        rrf_score = vector_weight / (rrf_k + rank + 1)
-        
-        if chunk_key not in chunk_scores:
-            chunk_scores[chunk_key] = {
-                "score": rrf_score,
-                "text": doc,
-                "source": meta.get("source", "unknown"),
-                "title": meta.get("title", "unknown"),
-                "distance": dist
-            }
-        else:
-            chunk_scores[chunk_key]["score"] += rrf_score
-    
-    if bm25 is not None and bm25_scores:
-        bm25_ranked = sorted(enumerate(bm25_scores), key=lambda x: x[1], reverse=True)
-        
-        for rank, (idx, _) in enumerate(bm25_ranked):
-            chunk = bm25_chunks[idx]
-            chunk_key = f"{chunk['source']}_{chunk['chunk_index']}"
-            rrf_score = bm25_weight / (rrf_k + rank + 1)
-            
-            if chunk_key in chunk_scores:
-                chunk_scores[chunk_key]["score"] += rrf_score
-            else:
-                chunk_scores[chunk_key] = {
-                    "score": rrf_score,
-                    "text": chunk["text"],
-                    "source": chunk["source"],
-                    "title": chunk["title"],
-                    "distance": 1.0
-                }
-    
-    sorted_chunks = sorted(chunk_scores.values(), key=lambda x: x["score"], reverse=True)
-    
-    chunks = []
-    for item in sorted_chunks[:top_k]:
-        chunks.append({
-            "text": item["text"],
-            "source": item["source"],
-            "title": item["title"],
-            "distance": item.get("distance", 1.0),
-            "hybrid_score": round(item["score"], 4)
-        })
-    
-    return chunks
+    def hybrid_search(self, query: str) -> list[RetrieveResultItem]:
+        """Выполняет гибридный поиск с BM25 и векторным поиском через RRF."""
+        if not query.strip():
+            return []
+
+        bm25_rows = self._search_bm25(
+            query=query,
+            limit=self.top_k * 2,
+        )
+
+        query_embedding = self.embedder.embed(query)
+        vector_rows = self._search_vector(
+            embedding=query_embedding,
+            limit=self.top_k * 2,
+        )
+
+        rrf_scores: dict[str, float] = {}
+        vector_weight = 1.0 - self.bm25_weight
+
+        for rank, row in enumerate(bm25_rows, start=1):
+            rrf_scores[row["chunk_id"]] = self.bm25_weight / (self.rrf_k + rank)
+
+        for rank, row in enumerate(vector_rows, start=1):
+            cid = row["chunk_id"]
+            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + vector_weight / (self.rrf_k + rank)
+
+        sorted_ids = sorted(
+            rrf_scores.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[: self.top_k]
+
+        results: list[RetrieveResultItem] = []
+        for chunk_id, rrf_score in sorted_ids:
+            row = self.db.conn.execute(
+                """
+                SELECT c.chunk_id, c.document_id, c.text, d.path
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.document_id
+                WHERE c.chunk_id = ?
+                """,
+                (chunk_id,),
+            ).fetchone()
+
+            if row:
+                results.append(
+                    RetrieveResultItem(
+                        chunk_id=row["chunk_id"],
+                        document_id=row["document_id"],
+                        text=row["text"],
+                        document_path=row["path"],
+                        rrf_score=round(rrf_score, 5),
+                    ),
+                )
+
+        return results
+
+    def _search_bm25(
+        self,
+        query: str,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Поиск через BM25 (FTS5)."""
+        safe_query = query.replace('"', '""')
+        return self.db.conn.execute(
+            """
+            SELECT c.chunk_id, bm25(chunks_fts) as score
+            FROM chunks c
+            JOIN chunks_fts fts ON c.rowid = fts.rowid
+            WHERE chunks_fts MATCH ?
+            ORDER BY score
+            LIMIT ?
+            """,
+            (
+                f'"{safe_query}"',
+                limit,
+            ),
+        ).fetchall()
+
+    def _search_vector(
+        self,
+        embedding: np.ndarray,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Векторный поиск через sqlite-vec (HNSW)."""
+        emb_bytes = struct.pack(
+            f"{len(embedding)}f",
+            *embedding,
+        )
+        return self.db.conn.execute(
+            """
+            SELECT chunk_id, distance
+            FROM chunks_vec
+            WHERE embedding MATCH ?
+            ORDER BY distance
+            LIMIT ?
+            """,
+            (
+                emb_bytes,
+                limit,
+            ),
+        ).fetchall()

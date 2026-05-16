@@ -1,260 +1,222 @@
-"""Индексация vault."""
+"""Индексация Obsidian vault: чанки, BM25, векторный индекс."""
 
-import json
-import pickle
-import re
-import numpy as np
-from pathlib import Path
+import logging
+from datetime import datetime
 
-import chromadb
 from langchain_text_splitters import MarkdownTextSplitter
-from rank_bm25 import BM25Okapi
+from more_itertools import chunked
 
-from lib.embeddings import get_embeddings
+from lib.config import config
+from lib.db.database import Database
+from lib.db.repositories import ChunkRepository, DocumentRepository
+from lib.embedder import Embedder
+from lib.schema import (
+    ChunkCreate,
+    DocumentCreate,
+    DocumentResponse,
+    IndexingState,
+)
 
-INDEX_META_FILE = "index_metadata.json"
+logger = logging.getLogger("obsidian-rag")
 
 
-def tokenize_for_bm25(text: str) -> list[str]:
-    return re.findall(r'\w+', text.lower())
+class Indexer:
+    """Индексатор Obsidian vault.
 
+    Процесс:
+    1. Сканирует vault на .md-файлы
+    2. Сравнивает с документами в БД по path и mtime
+    3. Удаляет устаревшие, создаёт/обновляет актуальные
+    4. Разбивает на чанки
+    5. Получает эмбеддинги и сохраняет чанки в БД
+    """
 
-def load_index_metadata(db_path: str) -> dict:
-    meta_path = Path(db_path) / INDEX_META_FILE
-    if meta_path.exists():
+    def __init__(
+        self,
+        embedder: Embedder,
+        database: Database,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        self.embedder = embedder
+        self.database = database
+        self.chunk_size = chunk_size or config.indexing.chunk_size
+        self.chunk_overlap = chunk_overlap or config.indexing.chunk_overlap
+        self.batch_size = batch_size or config.indexing.batch_size
+
+    def run(
+        self,
+        reindex: bool,
+        state: IndexingState,
+    ) -> None:
+        """Запускает индексацию vault в текущем потоке."""
+        conn = self.database.new_connection()
+        document_repository = DocumentRepository(conn)
+        chunk_repository = ChunkRepository(conn)
+
         try:
-            with open(meta_path, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+            state.status = "running"
+            state.started_at = datetime.now()
+            state.message = ""
 
+            if reindex:
+                logger.info("Полная переиндексация...")
+                state.message = "Полная переиндексация..."
+                document_repository.delete_all()
 
-def save_index_metadata(db_path: str, meta: dict):
-    meta_path = Path(db_path) / INDEX_META_FILE
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(meta_path, "w") as f:
-        json.dump(meta, f, indent=2)
-
-
-def load_markdown_files(vault_path: str, old_meta: dict = None, full_rebuild: bool = False) -> tuple[list[dict], dict]:
-    documents = []
-    new_meta = {}
-    vault = Path(vault_path)
-    
-    for md_file in vault.rglob("*.md"):
-        if any(part.startswith(".") for part in md_file.parts):
-            continue
-        
-        relative_path = str(md_file.relative_to(vault))
-        current_mtime = md_file.stat().st_mtime
-        
-        new_meta[relative_path] = current_mtime
-        
-        if not full_rebuild and old_meta is not None:
-            if current_mtime <= old_meta.get(relative_path, 0):
-                continue
-        
-        try:
-            with open(md_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            if content.strip():
-                documents.append({
-                    "content": content,
-                    "source": relative_path,
-                    "title": md_file.stem
-                })
-        except Exception as e:
-            print(f"⚠️  Ошибка чтения {md_file}: {e}")
-    
-    return documents, new_meta
-
-
-def chunk_documents(documents: list[dict], chunk_size: int, chunk_overlap: int) -> list[dict]:
-    splitter = MarkdownTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    chunks = []
-    
-    for doc in documents:
-        doc_chunks = splitter.split_text(doc["content"])
-        for i, chunk in enumerate(doc_chunks):
-            chunks.append({
-                "text": chunk,
-                "source": doc["source"],
-                "title": doc["title"],
-                "chunk_index": i,
-                "tokens": tokenize_for_bm25(chunk)
-            })
-    
-    return chunks
-
-
-def run_indexer(config, collection, bm25, bm25_chunks, indexing_state):
-    """Запуск индексации vault."""
-    full_rebuild = indexing_state.get("full_rebuild", False)
-    
-    indexing_state["running"] = True
-    indexing_state["error"] = None
-    
-    try:
-        vault_path = config.vault_path
-        db_path = config.db_path
-        chunk_size = config.chunk_size
-        chunk_overlap = config.chunk_overlap
-        
-        old_meta = load_index_metadata(db_path) if not full_rebuild else {}
-        
-        indexing_state["stage"] = "loading"
-        indexing_state["progress"] = 0.05
-        mode_text = "полная" if full_rebuild else "инкрементальная"
-        indexing_state["message"] = f"Загрузка файлов ({mode_text})..."
-        
-        documents, new_meta = load_markdown_files(vault_path, old_meta, full_rebuild)
-        indexing_state["total_documents"] = len(documents)
-        
-        if not documents:
-            indexing_state["stage"] = "done"
-            indexing_state["progress"] = 1.0
-            indexing_state["message"] = "Нет новых или изменённых документов"
-            indexing_state["running"] = False
-            return None, bm25, bm25_chunks
-        
-        indexing_state["stage"] = "chunking"
-        indexing_state["progress"] = 0.15
-        indexing_state["message"] = "Разбивка на чанки..."
-        
-        new_chunks = chunk_documents(documents, chunk_size, chunk_overlap)
-        indexing_state["total_chunks"] = len(new_chunks)
-        
-        indexing_state["stage"] = "bm25"
-        indexing_state["progress"] = 0.25
-        indexing_state["message"] = "Создание BM25 индекса..."
-        
-        if full_rebuild or bm25 is None:
-            tokenized_chunks = [c["tokens"] for c in new_chunks]
-            bm25_new = BM25Okapi(tokenized_chunks)
-            all_chunks = new_chunks
-        else:
-            changed_sources = set(doc["source"] for doc in documents)
-            old_chunks = [c for c in (bm25_chunks or []) if c["source"] not in changed_sources]
-            all_chunks = old_chunks + new_chunks
-            tokenized_chunks = [c["tokens"] for c in all_chunks]
-            bm25_new = BM25Okapi(tokenized_chunks)
-        
-        bm25_path = Path(db_path) / "bm25_index.pkl"
-        bm25_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(bm25_path, "wb") as f:
-            pickle.dump({"bm25": bm25_new, "chunks": all_chunks}, f)
-        
-        indexing_state["stage"] = "embeddings"
-        indexing_state["progress"] = 0.30
-        indexing_state["message"] = "Создание эмбеддингов..."
-        
-        texts = [c["text"] for c in new_chunks]
-        batch_size = 32
-        all_embeddings = []
-        
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            batch_emb = get_embeddings(config.embeddings_url, config.embeddings_model, batch_texts)
-            all_embeddings.append(batch_emb)
-            
-            progress = 0.30 + 0.45 * (i + len(batch_texts)) / len(texts)
-            indexing_state["progress"] = min(progress, 0.75)
-            indexing_state["message"] = f"Эмбеддинги: {min(i + batch_size, len(texts))}/{len(texts)}"
-        
-        embeddings = np.concatenate(all_embeddings, axis=0)
-        
-        indexing_state["stage"] = "saving"
-        indexing_state["progress"] = 0.75
-        indexing_state["message"] = "Сохранение в ChromaDB..."
-        
-        chroma_client_local = chromadb.PersistentClient(path=db_path)
-        
-        if full_rebuild:
-            try:
-                chroma_client_local.delete_collection("obsidian_vault")
-            except:
-                pass
-            collection_new = chroma_client_local.create_collection(
-                name="obsidian_vault",
-                metadata={"hnsw:space": "cosine"}
+            state.message = "Загрузка документов..."
+            stale_document_ids, new_document_schemas = self._load_documents(
+                document_repository,
             )
-            
-            for i in range(0, len(all_chunks), batch_size):
-                batch = all_chunks[i:i + batch_size]
-                end_idx = min(i + batch_size, len(embeddings))
-                batch_emb = embeddings[i:end_idx]
-                
-                if len(batch_emb) > 0 and len(batch) > 0:
-                    batch = batch[:len(batch_emb)]
-                    collection_new.add(
-                        ids=[f"chunk_{i + j}" for j in range(len(batch))],
-                        embeddings=batch_emb.tolist(),
-                        documents=[c["text"] for c in batch],
-                        metadatas=[{
-                            "source": c["source"],
-                            "title": c["title"],
-                            "chunk_index": c["chunk_index"]
-                        } for c in batch]
-                    )
-                
-                progress = 0.75 + 0.20 * min(i + batch_size, len(all_chunks)) / len(all_chunks)
-                indexing_state["progress"] = min(progress, 0.95)
-                indexing_state["message"] = f"Сохранение: {min(i + batch_size, len(all_chunks))}/{len(all_chunks)}"
-        else:
-            collection_new = chroma_client_local.get_or_create_collection(
-                name="obsidian_vault",
-                metadata={"hnsw:space": "cosine"}
-            )
-            
-            changed_sources = set(doc["source"] for doc in documents)
-            if collection is not None and changed_sources:
-                try:
-                    existing = collection.get(include=["metadatas"])
-                    ids_to_delete = [id_ for id_, meta in zip(existing["ids"], existing["metadatas"])
-                                     if meta.get("source") in changed_sources]
-                    if ids_to_delete:
-                        collection.delete(ids=ids_to_delete)
-                except:
-                    pass
-            
-            offset = collection_new.count()
-            for i in range(0, len(new_chunks), batch_size):
-                batch = new_chunks[i:i + batch_size]
-                batch_emb = embeddings[i:i + batch_size]
-                
-                collection_new.add(
-                    ids=[f"chunk_{offset + j}" for j in range(len(batch))],
-                    embeddings=batch_emb.tolist(),
-                    documents=[c["text"] for c in batch],
-                    metadatas=[{
-                        "source": c["source"],
-                        "title": c["title"],
-                        "chunk_index": c["chunk_index"]
-                    } for c in batch]
+
+            if stale_document_ids:
+                logger.info(f"Удаление {len(stale_document_ids)} устаревших документов...")
+                state.message = (
+                    f"Удаление {len(stale_document_ids)} устаревших документов..."
                 )
-                offset += len(batch)
-                
-                progress = 0.75 + 0.20 * (i + len(batch)) / len(new_chunks)
-                indexing_state["progress"] = min(progress, 0.95)
-                indexing_state["message"] = f"Сохранение: {min(i + batch_size, len(new_chunks))}/{len(new_chunks)}"
-        
-        if full_rebuild:
-            save_index_metadata(db_path, new_meta)
-        else:
-            save_index_metadata(db_path, {**old_meta, **new_meta})
-        
-        indexing_state["stage"] = "done"
-        indexing_state["progress"] = 1.0
-        indexing_state["message"] = f"Готово: {collection_new.count()} чанков"
-        
-        return collection_new, bm25_new, all_chunks
-        
-    except Exception as e:
-        indexing_state["error"] = str(e)
-        indexing_state["stage"] = "error"
-        indexing_state["message"] = f"Ошибка: {str(e)[:100]}"
-        return None, bm25, bm25_chunks
-    
-    finally:
-        indexing_state["running"] = False
+                document_repository.delete_many(stale_document_ids)
+
+            if not new_document_schemas:
+                logger.info("Нет новых документов для индексации")
+                state.status = "done"
+                state.message = "Нет новых документов для индексации"
+                return
+
+            logger.info(f"Создание {len(new_document_schemas)} новых документов...")
+            state.message = (
+                f"Создание {len(new_document_schemas)} новых документов..."
+            )
+            new_documents = document_repository.create_many(new_document_schemas)
+
+            document_ids, chunk_texts = self._split_documents(new_documents)
+
+            total_chunks = len(chunk_texts)
+            logger.info(f"Эмбеддинг {total_chunks} чанков батчами по {self.batch_size}...")
+            state.message = f"Эмбеддинг {total_chunks} чанков..."
+            chunk_embeddings = self._encode_chunks(chunk_texts, state)
+
+            logger.info(f"Сохранение {total_chunks} чанков...")
+            state.message = f"Сохранение {total_chunks} чанков..."
+            new_chunks = [
+                ChunkCreate(
+                    document_id=document_id,
+                    text=text,
+                    embedding=embedding,
+                )
+                for document_id, text, embedding in zip(
+                    document_ids,
+                    chunk_texts,
+                    chunk_embeddings,
+                )
+            ]
+            chunk_repository.create_many(new_chunks)
+
+            state.status = "done"
+            state.message = (
+                f"Индексация завершена: {len(new_documents)} документов, "
+                f"{total_chunks} чанков"
+            )
+            logger.info(state.message)
+
+        except Exception as e:
+            logger.error(f"Ошибка индексации: {e}", exc_info=True)
+            state.status = "error"
+            state.message = f"Ошибка индексации: {e}"
+        finally:
+            conn.close()
+            logger.debug("Соединение индексатора закрыто")
+
+    def _load_documents(
+        self,
+        document_repository: DocumentRepository,
+    ) -> tuple[list[str], list[DocumentCreate]]:
+        """Сканирует vault и возвращает списки устаревших и новых документов."""
+        stale_document_ids: list[str] = []
+        new_document_schemas: list[DocumentCreate] = []
+
+        existing_docs = document_repository.get_all()
+        document_mapping = {
+            doc.path: doc
+            for doc in existing_docs
+        }
+
+        logger.info(f"Сканирование vault: {config.paths.vault_path}")
+        md_files = list(config.paths.vault_path.rglob("*.md"))
+        logger.info(f"Найдено .md файлов: {len(md_files)}")
+
+        for md_file in md_files:
+            if any(part.startswith(".") for part in md_file.parts):
+                continue
+
+            path = str(md_file.relative_to(config.paths.vault_path))
+            modified_dt = datetime.fromtimestamp(md_file.stat().st_mtime)
+            current = document_mapping.get(path)
+
+            if current:
+                if current.created_at >= modified_dt:
+                    continue
+                stale_document_ids.append(current.document_id)
+
+            text: str | None = None
+            try:
+                text = md_file.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning(f"Ошибка чтения {md_file}: {e}")
+
+            if not text:
+                continue
+
+            new_document_schemas.append(DocumentCreate(path=path, text=text))
+
+        logger.info(
+            f"Устаревших: {len(stale_document_ids)}, "
+            f"новых: {len(new_document_schemas)}"
+        )
+        return stale_document_ids, new_document_schemas
+
+    def _split_documents(
+        self,
+        documents: list[DocumentResponse],
+    ) -> tuple[list[str], list[str]]:
+        """Разбивает документы на чанки."""
+        splitter = MarkdownTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+        )
+
+        document_ids: list[str] = []
+        chunk_texts: list[str] = []
+
+        for document in documents:
+            chunks = splitter.split_text(document.text)
+            for chunk_text in chunks:
+                document_ids.append(document.document_id)
+                chunk_texts.append(chunk_text)
+
+        logger.info(
+            f"Разбито {len(documents)} документов на {len(chunk_texts)} чанков"
+        )
+        return document_ids, chunk_texts
+
+    def _encode_chunks(
+        self,
+        chunk_texts: list[str],
+        state: IndexingState,
+    ) -> list[list[float]]:
+        """Получает эмбеддинги для чанков батчами."""
+        total = len(chunk_texts)
+        chunk_embeddings: list[list[float]] = []
+
+        for i, texts in enumerate(chunked(chunk_texts, self.batch_size)):
+            embeddings = self.embedder.embed_many(list(texts))
+            chunk_embeddings.extend(embeddings.tolist())
+
+            processed = min((i + 1) * self.batch_size, total)
+            state.message = f"Эмбеддинг чанков: {processed}/{total}"
+
+            if i % 10 == 0:
+                logger.debug(f"Прогресс эмбеддинга: {processed}/{total}")
+
+        logger.info(f"Эмбеддинг завершён: {len(chunk_embeddings)} векторов")
+        return chunk_embeddings

@@ -3,59 +3,83 @@
 import numpy as np
 import requests
 
+from lib.config import config
+from lib.schema import RetrieveResultItem, RerankResultItem
 
-def rerank_chunks(
-    reranker_url: str,
-    question: str,
-    chunks: list[dict],
-    top_k: int = 5,
-    fallback: bool = True
-) -> list[dict]:
-    """Переранжирование чанков через API реранкера."""
-    if not chunks or len(chunks) <= top_k:
-        chunks.sort(key=lambda x: x["distance"])
-        for c in chunks:
-            c["relevance"] = round(1.0 - c["distance"], 4)
-        return chunks[:top_k]
-    
-    try:
+
+class Reranker:
+    """Реранкер, использующий внешний API для пересортировки результатов поиска."""
+
+    def __init__(
+        self,
+        url: str | None = None,
+        model: str | None = None,
+        top_k: int | None = None,
+        timeout: int = 30,
+    ) -> None:
+        self.url = url or config.urls.reranker_url
+        self.model = model or config.models.reranker_model
+        self.top_k = top_k or config.search.top_k_rerank
+        self.timeout = timeout
+
+    def rerank(
+        self,
+        query: str,
+        retrieve_results: list[RetrieveResultItem],
+    ) -> list[RerankResultItem]:
+        """Переранжирует результаты поиска."""
+        if not retrieve_results:
+            return []
+
+        texts = [res.text for res in retrieve_results]
+        scores = self._call_api(query, texts)
+        scores = self._normalize(np.array(scores)).tolist()
+
+        pairs = list(zip(retrieve_results, scores))
+        pairs.sort(key=lambda pair: pair[1], reverse=True)
+
+        return [
+            RerankResultItem(
+                chunk_id=res.chunk_id,
+                document_id=res.document_id,
+                text=res.text,
+                document_path=res.document_path,
+                relevance=round(score, 5),
+            )
+            for res, score in pairs[: self.top_k]
+        ]
+
+    def _call_api(
+        self,
+        query: str,
+        texts: list[str],
+    ) -> list[float]:
+        """Отправляет запрос к API реранкера и возвращает сырые скоры."""
         response = requests.post(
-            reranker_url,
+            self.url,
             json={
-                "query": question,
-                "documents": [c["text"][:1024] for c in chunks]
+                "query": query,
+                "documents": texts,
+                "model": self.model,
             },
-            timeout=30
+            timeout=self.timeout,
         )
-        
-        if response.status_code != 200:
-            raise Exception(f"Статус {response.status_code}")
-        
+        response.raise_for_status()
+
         data = response.json()
         results = data.get("results", [])
-        scores = [r.get("relevance_score", 1.0) for r in results]
-        
-        scores = np.array(scores, dtype=np.float64)
-        scores = np.nan_to_num(scores, nan=-1e9, posinf=1e9, neginf=-1e9)
-        scores = scores - np.max(scores)
-        exp_scores = np.exp(scores)
-        normalized = exp_scores / np.sum(exp_scores)
-        
-        result = []
-        for item, score in zip(results, normalized):
-            idx = item.get("index", 0)
-            if idx < len(chunks):
-                chunk = chunks[idx]
-                chunk["relevance"] = round(float(score), 4)
-                result.append(chunk)
-        
-        return result[:top_k]
-        
-    except Exception as e:
-        print(f"⚠️ Ошибка реранкера: {e}, fallback на distance")
-        if fallback:
-            chunks.sort(key=lambda x: x["distance"])
-            for c in chunks:
-                c["relevance"] = round(1.0 - c["distance"], 4)
-            return chunks[:top_k]
-        raise
+        return [r.get("relevance_score", 0.0) for r in results]
+
+    @staticmethod
+    def _normalize(scores: np.ndarray) -> np.ndarray:
+        """
+        Сигмоида — абсолютная шкала релевантности.
+
+        Пороги для min_relevance:
+        0.7 — только высокорелевантные
+        0.5 — релевантные и нейтральные
+        0.3 — пропускать почти всё
+        """
+        scores = np.nan_to_num(scores, nan=0.0, posinf=15.0, neginf=-15.0)
+        scores = np.clip(scores, -15.0, 15.0)
+        return 1.0 / (1.0 + np.exp(-scores))

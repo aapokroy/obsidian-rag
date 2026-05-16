@@ -1,24 +1,63 @@
+# config.yaml
+# ============================================================
 # Пути
-vault_path: "/vault"
-db_path: "/app/chroma_db"
+# ============================================================
+paths:
+  vault_path: "/vault"
+  data_path: "/app/data"
+  db_path: "/app/data/app.db"              # путь к файлу SQLite
 
+# ============================================================
 # URL-ы сервисов
-llm_url: "http://host.docker.internal:1234/v1"
-embeddings_url: "http://host.docker.internal:1234/v1/embeddings"
-reranker_url: "http://host.docker.internal:8001/rerank"
+# ============================================================
+urls:
+  llm_url: "http://host.docker.internal:1234/v1"
+  embeddings_url: "http://host.docker.internal:1234/v1/embeddings"
+  reranker_url: "http://host.docker.internal:8001/rerank"
 
+# ============================================================
 # Модели
-llm_model: "t-lite-it-2.1"
-embeddings_model: "text-embedding-user-bge-m3"
-reranker_model: "nvidia/Llama-Nemotron-Rerank-1B-v2"
+# ============================================================
+models:
+  llm_model: "t-lite-it-2.1"
+  embeddings_model: "text-embedding-user-bge-m3"
+  reranker_model: "nvidia/Llama-Nemotron-Rerank-1B-v2"
 
-# Индексация
-chunk_size: 600
-chunk_overlap: 100
+# ============================================================
+# Эмбеддинги
+# ============================================================
+embeddings:
+  dimension: 1024                            # размерность векторов (bge-m3)
 
+# ============================================================
+# Индексация (разбиение на чанки)
+# ============================================================
+indexing:
+  chunk_size: 600
+  chunk_overlap: 100
+  batch_size: 16
+
+# ============================================================
 # Поиск
-top_k_retrieval: 50
-top_k_final: 12
-min_relevance: 0.01
-bm25_weight: 0.3
-rrf_k: 60
+# ============================================================
+search:
+  top_k_retrieval: 50                        # сколько кандидатов достаём из индекса
+  top_k_rerank: 12                           # сколько отдаём после реранка
+  min_relevance: 0.5                         # минимальный скор релевантности
+  bm25_weight: 0.3                           # вес BM25 в гибридном поиске
+  rrf_k: 60                                  # константа k для Reciprocal Rank Fusion
+
+# ============================================================
+# Чат
+# ============================================================
+chat:
+  default_title: "Без названия"              # название нового чата
+  title_max_length: 50                       # макс. длина автоназвания из первого сообщения
+  context_limit: 20                          # сколько последних сообщений подавать в контекст
+
+# ============================================================
+# LLM
+# ============================================================
+llm:
+  max_tokens: 8192
+  temperature: 0.2
