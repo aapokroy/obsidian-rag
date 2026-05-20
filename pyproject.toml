@@ -1,30 +1,27 @@
-[tool.poetry]
+[project]
 name = "obsidian-rag"
 version = "0.1.0"
 description = "Local RAG for Obsidian vault"
-authors = ["You"]
+authors = [
+    {name = "You"},
+]
 readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "fastapi>=0.115.0,<0.116.0",
+    "uvicorn>=0.34.0,<0.35.0",
+    "langchain-text-splitters>=0.3.3,<0.4.0",
+    "pyyaml>=6.0,<7.0",
+    "openai>=2.36.0,<3.0.0",
+    "requests>=2.34.2,<3.0.0",
+    "pydantic>=2.13.4,<3.0.0",
+    "sqlite-vec>=0.1.9,<0.2.0",
+    "more-itertools>=11.0.2,<12.0.0",
+    "numpy>=2.4.5,<3.0.0",
+]
+
+[tool.poetry]
 package-mode = false
-
-[[tool.poetry.source]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
-[tool.poetry.dependencies]
-python = "^3.11"
-fastapi = ">=0.115.0,<0.116.0"
-uvicorn = ">=0.34.0,<0.35.0"
-langchain-text-splitters = ">=0.3.3,<0.4.0"
-torch = {version = ">=2.5.0,<3.0.0", source = "pytorch-cpu"}
-pyyaml = ">=6.0,<7.0"
-openai = "^2.36.0"
-requests = "^2.34.2"
-pydantic = "^2.13.4"
-pysqlite3 = "^0.6.0"
-sqlite-vec = "^0.1.9"
-more-itertools = "^11.0.2"
-numpy = "^2.4.5"
 
 [build-system]
 requires = ["poetry-core"]

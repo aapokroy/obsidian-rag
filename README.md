@@ -1,29 +1,29 @@
 # Obsidian RAG Chat
 
-Локальный RAG-чат для базы знаний Obsidian с гибридным поиском, реранкингом и стримингом ответов.
+A local RAG chat for an Obsidian knowledge base with hybrid search, reranking, and streaming answers.
 
-> ⚠️ **Vibe-coded проект.** Этот код почти полностью написан через общение с AI.
+> Note: this is a vibe-coded project. Most of the code was built through AI-assisted iteration.
 
-## Возможности
+## Features
 
-- **Чат с базой знаний Obsidian** — задаёшь вопрос, получаешь ответ на основе заметок
-- **Гибридный поиск** — BM25 + векторный поиск + Reciprocal Rank Fusion
-- **Реранкинг** — отдельный микро-сервер на Nemotron 1B с MPS-ускорением
-- **Стриминг ответов** — текст генерируется посимвольно, как в ChatGPT
-- **История чатов** — сохраняется на диск, переживает перезапуски
-- **Инкрементальная индексация** — только изменённые файлы, не пересчитывает всё
-- **Поддержка Markdown** — ответы с форматированием, кодом, таблицами
-- **Полностью локально** — LLM, эмбеддинги и реранкер работают на твоём Mac
+- **Chat over an Obsidian vault**: ask questions and get answers grounded in your notes
+- **Hybrid search**: BM25 + vector search + Reciprocal Rank Fusion
+- **Reranking**: separate Nemotron 1B microservice with MPS acceleration
+- **Streaming answers**: tokens are streamed to the UI as they are generated
+- **Chat history**: persisted in SQLite and available after restarts
+- **Incremental indexing**: only changed files are reprocessed
+- **Markdown support**: formatted answers with code blocks and tables
+- **Local-first setup**: LLM, embeddings, and reranker can all run locally
 
-## Архитектура
+## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────┐
-│  Mac (хост)                                 │
+│  Mac host                                   │
 │                                             │
 │  ┌──────────────┐  ┌─────────────────────┐  │
 │  │  LM Studio   │  │  rerank-server      │  │
-│  │  LLM + Emb.  │  │  (Nemotron, MPS)    │  │
+│  │  LLM + Emb.  │  │  Nemotron + MPS     │  │
 │  │  :1234       │  │  :8001              │  │
 │  └──────┬───────┘  └──────────┬──────────┘  │
 │         │                     │             │
@@ -31,44 +31,45 @@
 │  │         Docker                         │  │
 │  │  ┌──────────────────────────────────┐  │  │
 │  │  │  FastAPI server                  │  │  │
-│  │  │  ChromaDB + BM25                 │  │  │
+│  │  │  SQLite + sqlite-vec + FTS5      │  │  │
 │  │  │  :8000                           │  │  │
 │  │  └──────────────────────────────────┘  │  │
 │  └────────────────────────────────────────┘  │
 └─────────────────────────────────────────────┘
 ```
 
-## Стек (2026)
+## Stack
 
-| Компонент | Технология | Модель |
-|-----------|------------|--------|
-| LLM | LM Studio (OpenAI API) | `t-lite-it-2.1` (8B, Q5_K_M) |
-| Эмбеддинги | LM Studio API | `text-embedding-user-bge-m3` |
-| Реранкер | FastAPI + Transformers (MPS) | `nvidia/Llama-Nemotron-Rerank-1B-v2` |
-| Векторная БД | ChromaDB | — |
-| Гибридный поиск | BM25 + RRF | — |
-| Чанкинг | LangChain MarkdownTextSplitter | — |
-| Сервер | FastAPI + uvicorn | — |
-| Зависимости | Poetry | — |
+| Component | Technology | Model |
+|-----------|------------|-------|
+| LLM | LM Studio OpenAI-compatible API | `t-lite-it-2.1` |
+| Embeddings | LM Studio API | `text-embedding-user-bge-m3` |
+| Reranker | FastAPI + Transformers + MPS | `nvidia/Llama-Nemotron-Rerank-1B-v2` |
+| Storage | SQLite + sqlite-vec + FTS5 | - |
+| Hybrid search | BM25 + vector search + RRF | - |
+| Chunking | LangChain MarkdownTextSplitter | - |
+| Server | FastAPI + uvicorn | - |
+| Dependencies | Poetry | - |
 
-## Быстрый старт
+## Quick Start
 
-### 1. Установи LM Studio
+### 1. Install LM Studio
 
-Скачай с [lmstudio.ai](https://lmstudio.ai), установи как обычное приложение Mac.
+Download it from [lmstudio.ai](https://lmstudio.ai) and install it normally.
 
-### 2. Скачай модели в LM Studio
+### 2. Download models in LM Studio
 
-- **LLM**: найди `t-lite-it-2.1` → выбери `Q5_K_M` (~5.9 ГБ)
-- **Embeddings**: найди `text-embedding-user-bge-m3` → выбери `Q4_K_M` (~2.2 ГБ)
+- **LLM**: find `t-lite-it-2.1` and choose a suitable quantization such as `Q5_K_M`
+- **Embeddings**: find `text-embedding-user-bge-m3`
 
-### 3. Запусти серверы LM Studio
+### 3. Start LM Studio servers
 
-Вкладка **Developer** (</>):
-- Выбери LLM-модель → **GPU Offload: Max** → **Context Length: 8192** → **Start Server**
-- Embeddings-модель загрузится автоматически при запросе
+In the **Developer** tab:
 
-### 4. Запусти реранк-сервер
+- Select the LLM model, set GPU offload/context length as needed, and start the server
+- The embeddings model will be loaded automatically when the app requests embeddings
+
+### 4. Start the rerank server
 
 ```bash
 cd rerank-server
@@ -77,112 +78,95 @@ pip install -r requirements.txt
 python rerank_server.py
 ```
 
-### 5. Настрой .env
+### 5. Configure `.env`
 
 ```bash
 echo "VAULT_PATH=/Users/you/ObsidianVault" > .env
 ```
 
-### 6. Запусти RAG-сервер
+### 6. Start the RAG server
 
 ```bash
 docker compose up -d
 ```
 
-### 7. Открой в браузере
+### 7. Open the UI
 
-```
+```text
 http://localhost:8000
 ```
 
-## Конфигурация (config.yaml)
+## Configuration
 
-```yaml
-# Пути
-vault_path: "/vault"
-db_path: "/app/chroma_db"
+The main configuration lives in `config.yaml` and is grouped by section:
 
-# URL-ы сервисов
-llm_url: "http://host.docker.internal:1234/v1"
-embeddings_url: "http://host.docker.internal:1234/v1/embeddings"
-reranker_url: "http://host.docker.internal:8001/rerank"
+- `paths`: vault path, data directory, and SQLite database path
+- `urls`: LM Studio and rerank-server endpoints
+- `models`: LLM, embedding, and reranker model names
+- `indexing`: chunk size, overlap, and batch size
+- `search`: top-k values, relevance threshold, BM25 weight, and RRF constant
+- `chat` and `llm`: history limit, temperature, and max tokens
 
-# Модели
-llm_model: "t-lite-it-2.1"
-embeddings_model: "text-embedding-user-bge-m3"
-reranker_model: "nvidia/Llama-Nemotron-Rerank-1B-v2"
+## Project Structure
 
-# Индексация
-chunk_size: 600
-chunk_overlap: 100
-
-# Поиск
-top_k_retrieval: 50
-top_k_rerank: 12
-min_relevance: 0.01
-bm25_weight: 0.3
-rrf_k: 60
-```
-
-## Структура проекта
-
-```
+```text
 obsidian-rag/
-├── server.py              # Точка входа
-├── lib/                   # Библиотека
-│   ├── config.py          # Pydantic-конфиг
-│   ├── chat_store.py      # Хранение чатов
-│   ├── embeddings.py      # Эмбеддинги через API
-│   ├── reranker.py        # Реранкинг через API
-│   ├── retriever.py       # Гибридный поиск
-│   ├── indexer.py         # Индексация
-│   └── prompt.py          # Сборка промпта
-├── rerank-server/         # Микро-сервер реранкера
+├── server.py                    # Minimal uvicorn entry point
+├── lib/
+│   ├── app.py                   # FastAPI app, routes, and service wiring
+│   ├── config.py                # Pydantic configuration
+│   ├── prompting.py             # Prompt and source assembly
+│   ├── embedder.py              # LM Studio embeddings client
+│   ├── reranker.py              # Rerank server client
+│   ├── retriever.py             # Hybrid search
+│   ├── indexer.py               # Obsidian vault indexing
+│   └── db/                      # SQLite schema and repositories
+├── rerank-server/               # Reranker microservice
 │   └── rerank_server.py
 ├── config.yaml
 ├── chat_ui.html
-├── docker-compose.yml
+├── docker-compose.yaml
 ├── Dockerfile
 └── pyproject.toml
 ```
 
-## Выбор моделей (альтернативы)
+## Model Options
 
 ### LLM
 
-| Модель | Размер | Скорость | Русский |
-|--------|--------|----------|---------|
-| `t-lite-it-2.1` (Q5_K_M) | ~5.9 ГБ | ⚡⚡⚡ | ✅ Отличное |
-| `qwen2.5:14b` | ~8.9 ГБ | ⚡⚡ | ✅ Отличное |
-| `gemma4:e4b` | ~5 ГБ | ⚡⚡⚡ | ✅ Хорошее |
+| Model | Size | Speed | Russian |
+|-------|------|-------|---------|
+| `t-lite-it-2.1` | ~5.9 GB | fast | excellent |
+| `qwen2.5:14b` | ~8.9 GB | medium | excellent |
+| `gemma4:e4b` | ~5 GB | fast | good |
 
-### Эмбеддинги
+### Embeddings
 
-| Модель | Размер | Контекст |
-|--------|--------|----------|
-| `text-embedding-user-bge-m3` | ~2.2 ГБ | 8192 токенов |
-| `multilingual-e5-large` | ~2.1 ГБ | 514 токенов |
-| `enbeddrus` | ~0.4 ГБ | 512 токенов |
+| Model | Size | Context |
+|-------|------|---------|
+| `text-embedding-user-bge-m3` | ~2.2 GB | 8192 tokens |
+| `multilingual-e5-large` | ~2.1 GB | 514 tokens |
+| `enbeddrus` | ~0.4 GB | 512 tokens |
 
-### Реранкер
+### Reranker
 
-| Модель | Размер | Скорость (MPS) |
-|--------|--------|----------------|
-| `nvidia/Llama-Nemotron-Rerank-1B-v2` | ~2.2 ГБ | ~0.1 сек/чанк |
-| `BAAI/bge-reranker-v2-m3` | ~1.2 ГБ | ~0.05 сек/чанк |
+| Model | Size | MPS speed |
+|-------|------|-----------|
+| `nvidia/Llama-Nemotron-Rerank-1B-v2` | ~2.2 GB | ~0.1 sec/chunk |
+| `BAAI/bge-reranker-v2-m3` | ~1.2 GB | ~0.05 sec/chunk |
 
-## Разработка
+## Development
 
 ```bash
-# Установка зависимостей
+# Install dependencies
 poetry install
 
-# Генерация lock-файла
+# Regenerate the lock file
 poetry lock
 
-# Сборка Docker
+# Build Docker image
 docker compose build
 
-# Запуск
+# Start services
 docker compose up -d
 ```

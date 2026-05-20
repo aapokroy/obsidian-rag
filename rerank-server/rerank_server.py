@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Микро-сервер реранкера Nemotron с MPS-ускорением."""
+"""FastAPI server for local document reranking."""
+
+import logging
 
 import torch
 import uvicorn
@@ -12,17 +14,21 @@ _MAX_LENGTH = 1024
 _HOST = "0.0.0.0"
 _PORT = 8001
 
-app = FastAPI(title="Nemotron Rerank Server")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("rerank-server")
 
-# --- Устройство ---
+app = FastAPI(title="Nemotron Rerank Server")
 _device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-# --- Загрузка модели ---
-print("=" * 50)
-print("🚀 Запуск Nemotron Rerank Server...")
-print("=" * 50)
-print(f"💻 Устройство: {_device}")
-print(f"⏳ Загрузка модели {_MODEL_NAME}...")
+logger.info("=" * 50)
+logger.info("Starting Nemotron Rerank Server")
+logger.info("=" * 50)
+logger.info("Device: %s", _device)
+logger.info("Loading model %s...", _MODEL_NAME)
 
 _tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME, trust_remote_code=True)
 _model = AutoModelForSequenceClassification.from_pretrained(
@@ -32,36 +38,25 @@ _model = AutoModelForSequenceClassification.from_pretrained(
 _model.to(_device)
 _model.eval()
 
-print("✅ Модель загружена\n")
+logger.info("Model loaded")
 
-
-# --- Модели запросов ---
 
 class RerankRequest(BaseModel):
-    """Запрос на реранкинг."""
+    """Request payload for reranking a list of documents."""
 
     query: str
     documents: list[str]
 
 
-# --- Эндпоинты ---
-
 @app.post("/rerank")
 async def rerank(request: RerankRequest) -> dict:
-    """Ранжирует документы по релевантности запросу.
-
-    Args:
-        request: Запрос с полем query и списком documents.
-
-    Returns:
-        Словарь с ключом results — список {"index": int, "relevance_score": float},
-        отсортированный по убыванию релевантности.
-    """
+    """Ranks documents by relevance to the query."""
+    logger.info("Rerank request: documents=%s", len(request.documents))
     scores: list[float] = []
 
     with torch.no_grad():
-        for doc in request.documents:
-            text = f"Query: {request.query}\nDocument: {doc}"
+        for document in request.documents:
+            text = f"Query: {request.query}\nDocument: {document}"
             inputs = _tokenizer(
                 text,
                 return_tensors="pt",
@@ -74,23 +69,21 @@ async def rerank(request: RerankRequest) -> dict:
 
     results = sorted(
         (
-            {"index": i, "relevance_score": score}
-            for i, score in enumerate(scores)
+            {"index": index, "relevance_score": score}
+            for index, score in enumerate(scores)
         ),
-        key=lambda r: r["relevance_score"],
+        key=lambda result: result["relevance_score"],
         reverse=True,
     )
-
+    logger.debug("Rerank response prepared: results=%s", len(results))
     return {"results": results}
 
 
 @app.get("/health")
 async def health() -> dict:
-    """Эндпоинт проверки здоровья сервера."""
+    """Returns server status and active device."""
     return {"status": "ok", "device": _device}
 
-
-# --- Точка входа ---
 
 if __name__ == "__main__":
     uvicorn.run(app, host=_HOST, port=_PORT)

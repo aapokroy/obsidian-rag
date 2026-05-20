@@ -1,19 +1,23 @@
-"""Репозиторий для работы с чанками."""
+"""Repository for chunks and vector rows."""
+
+import logging
 import struct
 import uuid
 
 import numpy as np
-import sqlite3
 
 from lib.db.models import Chunk
+from lib.db.repositories.base import BaseRepository
 from lib.schema import ChunkCreate, ChunkResponse
 
+logger = logging.getLogger("obsidian-rag")
 
-class ChunkRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+
+class ChunkRepository(BaseRepository):
+    """Repository for text chunks and their vectors."""
 
     def create_many(self, schemas: list[ChunkCreate]) -> list[ChunkResponse]:
+        """Creates chunks and matching sqlite-vec rows."""
         chunks = [
             Chunk(
                 chunk_id=str(uuid.uuid4()),
@@ -22,52 +26,54 @@ class ChunkRepository:
             )
             for schema in schemas
         ]
-        embeddings = [
-            np.array(schema.embedding, dtype=np.float32)
-            for schema in schemas
-        ]
 
-        if len(chunks) != len(embeddings):
-            raise ValueError("Chunks and embeddings must have same length")
+        if not chunks:
+            return []
 
-        self.conn.execute("BEGIN TRANSACTION")
-        try:
-            self.conn.executemany(
-                "INSERT INTO chunks VALUES (?, ?, ?, ?)",
+        with self.conn:
+            self.executemany(
+                """
+                INSERT INTO chunks (chunk_id, document_id, text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
                 [
                     (
-                        c.chunk_id,
-                        c.document_id,
-                        c.text,
-                        c.created_at,
+                        chunk.chunk_id,
+                        chunk.document_id,
+                        chunk.text,
+                        chunk.created_at,
                     )
-                    for c in chunks
+                    for chunk in chunks
+                ],
+            )
+            self.executemany(
+                """
+                INSERT INTO chunks_vec (chunk_id, embedding)
+                VALUES (?, ?)
+                """,
+                [
+                    (
+                        chunk.chunk_id,
+                        self._pack_embedding(schema.embedding),
+                    )
+                    for chunk, schema in zip(chunks, schemas)
                 ],
             )
 
-            for chunk, embedding in zip(chunks, embeddings):
-                emb_bytes = struct.pack(
-                    f"{len(embedding)}f",
-                    *embedding,
-                )
-                self.conn.execute(
-                    "INSERT INTO chunks_vec VALUES (?, ?)",
-                    (
-                        chunk.chunk_id,
-                        emb_bytes,
-                    ),
-                )
+        logger.debug("Chunks created: count=%s", len(chunks))
+        return [self._to_response(chunk) for chunk in chunks]
 
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
+    @staticmethod
+    def _pack_embedding(embedding: list[float]) -> bytes:
+        """Packs an embedding into sqlite-vec binary format."""
+        vector = np.array(embedding, dtype=np.float64)
+        return struct.pack(f"{len(vector)}f", *vector)
 
-        return [
-            ChunkResponse(
-                chunk_id=chunk.chunk_id,
-                document_id=chunk.document_id,
-                text=chunk.text,
-            )
-            for chunk in chunks
-        ]
+    @staticmethod
+    def _to_response(chunk: Chunk) -> ChunkResponse:
+        """Converts a Chunk dataclass into ChunkResponse."""
+        return ChunkResponse(
+            chunk_id=chunk.chunk_id,
+            document_id=chunk.document_id,
+            text=chunk.text,
+        )

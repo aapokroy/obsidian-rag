@@ -1,9 +1,23 @@
 .git
+.gitignore
+.dockerignore
 .env
-__pycache__
-*.pyc
 .venv
 venv
-*.md
-rerank-server
-data
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime/local data
+chats/
+data/
+vault/
+
+# Local development assets not needed in the app image
+rerank-server/
+prompt.md

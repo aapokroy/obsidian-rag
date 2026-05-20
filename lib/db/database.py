@@ -1,5 +1,6 @@
-# lib/db/database.py
-"""Управление подключением к БД и инициализация схемы."""
+"""Database connection management and schema initialization."""
+
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -7,28 +8,28 @@ import sqlite_vec
 
 from lib.config import config
 
+logger = logging.getLogger("obsidian-rag")
+
 
 class Database:
-    """Управляет подключением к SQLite и инициализацией схемы."""
+    """Manages SQLite connections and schema initialization."""
 
     def __init__(
         self,
-        db_path: str | None = None,
+        db_path: str | Path | None = None,
         embedding_dim: int | None = None,
     ) -> None:
-        self.db_path = db_path or config.paths.db_path
+        """Opens the main connection and applies the database schema."""
+        self.db_path = Path(db_path or config.paths.db_path)
         self.embedding_dim = embedding_dim or config.embeddings.dimension
 
-        # Создаём директорию для БД, если её нет
-        db_dir = Path(self.db_path).parent
-        db_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Основное соединение
         self.conn = self._create_connection()
         self._init_schema()
 
     def _create_connection(self) -> sqlite3.Connection:
-        """Создаёт новое соединение с БД."""
+        """Creates a new database connection."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -37,16 +38,18 @@ class Database:
         return conn
 
     def new_connection(self) -> sqlite3.Connection:
-        """Создаёт новое соединение для использования в другом потоке."""
+        """Creates a new connection for another thread."""
         return self._create_connection()
 
     def _init_schema(self) -> None:
-        """Применяет SQL-схему и создаёт векторную таблицу."""
+        """Applies the SQL schema and creates the vector table."""
         schema_path = Path(__file__).parent / "migrations" / "schema.sql"
+        self.conn.executescript(schema_path.read_text(encoding="utf-8"))
+        self._init_vector_table()
+        self.conn.commit()
 
-        with open(schema_path, "r", encoding="utf-8") as f:
-            self.conn.executescript(f.read())
-
+    def _init_vector_table(self) -> None:
+        """Creates the sqlite-vec virtual table for embeddings."""
         try:
             self.conn.execute(
                 f"""
@@ -56,14 +59,15 @@ class Database:
                 )
                 """,
             )
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            logger.warning("Failed to create chunks_vec: %s", exc)
 
     def close(self) -> None:
-        """Закрывает соединение с БД."""
+        """Closes the main database connection."""
         self.conn.close()
 
     def __enter__(self) -> "Database":
+        """Returns self for Database context-manager usage."""
         return self
 
     def __exit__(
@@ -72,4 +76,5 @@ class Database:
         exc_val: BaseException | None,
         exc_tb: object | None,
     ) -> None:
+        """Closes the connection when leaving the context manager."""
         self.close()

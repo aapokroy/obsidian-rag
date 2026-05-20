@@ -1,38 +1,53 @@
-"""Конфигурация приложения."""
+"""Application configuration and YAML loading."""
+
 from pathlib import Path
-from pydantic import BaseModel, Field
+from typing import Any
+
 import yaml
+from pydantic import BaseModel, Field
 
 
 class PathsConfig(BaseModel):
+    """Paths to the vault, runtime data, and SQLite database."""
+
     vault_path: Path = Path("/vault")
     data_path: Path = Path("/app/data")
     db_path: Path = Path("/app/data/app.db")
 
 
 class URLsConfig(BaseModel):
+    """URLs of external HTTP services."""
+
     llm_url: str = "http://host.docker.internal:1234/v1"
     embeddings_url: str = "http://host.docker.internal:1234/v1/embeddings"
     reranker_url: str = "http://host.docker.internal:8001/rerank"
 
 
 class ModelsConfig(BaseModel):
+    """Model names for the LLM, embeddings, and reranker."""
+
     llm_model: str = "t-lite-it-2.1"
     embeddings_model: str = "text-embedding-user-bge-m3"
     reranker_model: str = "nvidia/Llama-Nemotron-Rerank-1B-v2"
 
 
 class EmbeddingsConfig(BaseModel):
+    """Embedding vector parameters."""
+
     dimension: int = 1024
 
 
 class IndexingConfig(BaseModel):
+    """Document splitting and batched indexing parameters."""
+
     chunk_size: int = 600
     chunk_overlap: int = 100
     batch_size: int = 16
 
 
 class SearchConfig(BaseModel):
+    """Hybrid search and source filtering parameters."""
+
     top_k_retrieval: int = 50
     top_k_rerank: int = 12
     min_relevance: float = 0.01
@@ -41,17 +56,23 @@ class SearchConfig(BaseModel):
 
 
 class ChatConfig(BaseModel):
+    """Chat and dialog context parameters."""
+
     default_title: str = "Без названия"
     title_max_length: int = 50
     context_limit: int = 20
 
 
 class LLMConfig(BaseModel):
+    """LLM answer generation parameters."""
+
     max_tokens: int = 8192
     temperature: float = 0.1
 
 
 class AppConfig(BaseModel):
+    """Complete application configuration."""
+
     paths: PathsConfig = Field(default_factory=PathsConfig)
     urls: URLsConfig = Field(default_factory=URLsConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
@@ -63,50 +84,44 @@ class AppConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AppConfig":
-        """Загружает конфиг из YAML-файла с поддержкой каскадного переопределения."""
-        config_path = Path(path)
-        data: dict = {}
-
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-
-        return cls(**data)
+        """Loads configuration from a single YAML file."""
+        return cls(**_read_yaml_mapping(Path(path)))
 
     @classmethod
     def load(cls, *paths: str | Path) -> "AppConfig":
-        """
-        Каскадная загрузка: каждый следующий файл переопределяет предыдущий.
-
-        config = AppConfig.load("config.yaml", "config.local.yaml")
-        """
-        merged: dict = {}
+        """Loads cascading configs where each next file overrides previous values."""
+        merged: dict[str, Any] = {}
 
         for path in paths:
-            config_path = Path(path)
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-                merged = cls._deep_merge(merged, data)
+            data = _read_yaml_mapping(Path(path))
+            merged = _deep_merge(merged, data)
 
         return cls(**merged)
 
-    @staticmethod
-    def _deep_merge(base: dict, override: dict) -> dict:
-        """Рекурсивно сливает словари (override переопределяет base)."""
-        result = base.copy()
 
-        for key, value in override.items():
-            if (
-                key in result
-                and isinstance(result[key], dict)
-                and isinstance(value, dict)
-            ):
-                result[key] = AppConfig._deep_merge(result[key], value)
-            else:
-                result[key] = value
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    """Reads a YAML file and ensures the top level is a mapping."""
+    if not path.exists():
+        return {}
 
-        return result
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a YAML mapping: {path}")
+    return data
 
 
-config = AppConfig.from_yaml()
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merges dictionaries: override wins over base."""
+    result = base.copy()
+
+    for key, value in override.items():
+        base_value = result.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            result[key] = _deep_merge(base_value, value)
+        else:
+            result[key] = value
+
+    return result
+
+
+config = AppConfig.load("config.yaml", "config.local.yaml")

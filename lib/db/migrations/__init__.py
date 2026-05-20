@@ -1,1 +1,1 @@
-"""Миграции базы данных."""
+"""Database migrations package."""

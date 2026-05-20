@@ -1,7 +1,9 @@
-"""Индексация Obsidian vault: чанки, BM25, векторный индекс."""
+"""Obsidian vault indexing: documents, chunks, and vector index."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from langchain_text_splitters import MarkdownTextSplitter
 from more_itertools import chunked
@@ -10,26 +12,21 @@ from lib.config import config
 from lib.db.database import Database
 from lib.db.repositories import ChunkRepository, DocumentRepository
 from lib.embedder import Embedder
-from lib.schema import (
-    ChunkCreate,
-    DocumentCreate,
-    DocumentResponse,
-    IndexingState,
-)
+from lib.schema import ChunkCreate, DocumentCreate, DocumentResponse, IndexingState
 
 logger = logging.getLogger("obsidian-rag")
 
 
-class Indexer:
-    """Индексатор Obsidian vault.
+@dataclass(slots=True)
+class VaultChanges:
+    """Set of vault changes detected before indexing."""
 
-    Процесс:
-    1. Сканирует vault на .md-файлы
-    2. Сравнивает с документами в БД по path и mtime
-    3. Удаляет устаревшие, создаёт/обновляет актуальные
-    4. Разбивает на чанки
-    5. Получает эмбеддинги и сохраняет чанки в БД
-    """
+    stale_document_ids: list[str]
+    new_documents: list[DocumentCreate]
+
+
+class Indexer:
+    """Indexer for an Obsidian vault."""
 
     def __init__(
         self,
@@ -38,148 +35,177 @@ class Indexer:
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
         batch_size: int | None = None,
+        vault_path: Path | None = None,
     ) -> None:
+        """Initializes the indexer and chunking parameters."""
         self.embedder = embedder
         self.database = database
         self.chunk_size = chunk_size or config.indexing.chunk_size
         self.chunk_overlap = chunk_overlap or config.indexing.chunk_overlap
         self.batch_size = batch_size or config.indexing.batch_size
+        self.vault_path = vault_path or config.paths.vault_path
 
     def run(
         self,
         reindex: bool,
         state: IndexingState,
     ) -> None:
-        """Запускает индексацию vault в текущем потоке."""
+        """Runs vault indexing in the current thread."""
         conn = self.database.new_connection()
         document_repository = DocumentRepository(conn)
         chunk_repository = ChunkRepository(conn)
 
         try:
-            state.status = "running"
-            state.started_at = datetime.now()
-            state.message = ""
+            self._mark_running(state)
 
             if reindex:
-                logger.info("Полная переиндексация...")
-                state.message = "Полная переиндексация..."
+                self._set_message(state, "Full reindexing...")
                 document_repository.delete_all()
 
-            state.message = "Загрузка документов..."
-            stale_document_ids, new_document_schemas = self._load_documents(
-                document_repository,
-            )
+            changes = self._load_changes(document_repository, state)
+            self._delete_stale_documents(document_repository, changes, state)
 
-            if stale_document_ids:
-                logger.info(f"Удаление {len(stale_document_ids)} устаревших документов...")
-                state.message = (
-                    f"Удаление {len(stale_document_ids)} устаревших документов..."
-                )
-                document_repository.delete_many(stale_document_ids)
-
-            if not new_document_schemas:
-                logger.info("Нет новых документов для индексации")
-                state.status = "done"
-                state.message = "Нет новых документов для индексации"
+            if not changes.new_documents:
+                self._mark_done(state, "No new documents to index")
                 return
 
-            logger.info(f"Создание {len(new_document_schemas)} новых документов...")
-            state.message = (
-                f"Создание {len(new_document_schemas)} новых документов..."
+            documents = self._create_documents(document_repository, changes, state)
+            chunks = self._build_chunks(documents, state)
+            chunk_repository.create_many(chunks)
+
+            self._mark_done(
+                state,
+                (
+                    f"Indexing finished: {len(documents)} documents, "
+                    f"{len(chunks)} chunks"
+                ),
             )
-            new_documents = document_repository.create_many(new_document_schemas)
 
-            document_ids, chunk_texts = self._split_documents(new_documents)
-
-            total_chunks = len(chunk_texts)
-            logger.info(f"Эмбеддинг {total_chunks} чанков батчами по {self.batch_size}...")
-            state.message = f"Эмбеддинг {total_chunks} чанков..."
-            chunk_embeddings = self._encode_chunks(chunk_texts, state)
-
-            logger.info(f"Сохранение {total_chunks} чанков...")
-            state.message = f"Сохранение {total_chunks} чанков..."
-            new_chunks = [
-                ChunkCreate(
-                    document_id=document_id,
-                    text=text,
-                    embedding=embedding,
-                )
-                for document_id, text, embedding in zip(
-                    document_ids,
-                    chunk_texts,
-                    chunk_embeddings,
-                )
-            ]
-            chunk_repository.create_many(new_chunks)
-
-            state.status = "done"
-            state.message = (
-                f"Индексация завершена: {len(new_documents)} документов, "
-                f"{total_chunks} чанков"
-            )
-            logger.info(state.message)
-
-        except Exception as e:
-            logger.error(f"Ошибка индексации: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error("Indexing error: %s", exc, exc_info=True)
             state.status = "error"
-            state.message = f"Ошибка индексации: {e}"
+            state.message = f"Indexing error: {exc}"
         finally:
             conn.close()
-            logger.debug("Соединение индексатора закрыто")
+            logger.debug("Indexer connection closed")
 
-    def _load_documents(
+    def _load_changes(
         self,
         document_repository: DocumentRepository,
-    ) -> tuple[list[str], list[DocumentCreate]]:
-        """Сканирует vault и возвращает списки устаревших и новых документов."""
-        stale_document_ids: list[str] = []
-        new_document_schemas: list[DocumentCreate] = []
+        state: IndexingState,
+    ) -> VaultChanges:
+        """Scans the vault and returns stale and new documents."""
+        self._set_message(state, "Loading documents...")
 
-        existing_docs = document_repository.get_all()
-        document_mapping = {
-            doc.path: doc
-            for doc in existing_docs
+        existing_documents = {
+            document.path: document
+            for document in document_repository.get_all()
         }
+        stale_document_ids: list[str] = []
+        new_documents: list[DocumentCreate] = []
 
-        logger.info(f"Сканирование vault: {config.paths.vault_path}")
-        md_files = list(config.paths.vault_path.rglob("*.md"))
-        logger.info(f"Найдено .md файлов: {len(md_files)}")
+        markdown_files = list(self._iter_markdown_files())
+        logger.info("Scanning vault: %s", self.vault_path)
+        logger.info("Markdown files found: %s", len(markdown_files))
 
-        for md_file in md_files:
-            if any(part.startswith(".") for part in md_file.parts):
+        for markdown_file in markdown_files:
+            relative_path = str(markdown_file.relative_to(self.vault_path))
+            existing = existing_documents.get(relative_path)
+
+            if existing and not self._is_modified(markdown_file, existing.created_at):
                 continue
+            if existing:
+                stale_document_ids.append(existing.document_id)
 
-            path = str(md_file.relative_to(config.paths.vault_path))
-            modified_dt = datetime.fromtimestamp(md_file.stat().st_mtime)
-            current = document_mapping.get(path)
-
-            if current:
-                if current.created_at >= modified_dt:
-                    continue
-                stale_document_ids.append(current.document_id)
-
-            text: str | None = None
-            try:
-                text = md_file.read_text(encoding="utf-8").strip()
-            except (OSError, UnicodeDecodeError) as e:
-                logger.warning(f"Ошибка чтения {md_file}: {e}")
-
-            if not text:
-                continue
-
-            new_document_schemas.append(DocumentCreate(path=path, text=text))
+            text = self._read_markdown(markdown_file)
+            if text:
+                new_documents.append(DocumentCreate(path=relative_path, text=text))
 
         logger.info(
-            f"Устаревших: {len(stale_document_ids)}, "
-            f"новых: {len(new_document_schemas)}"
+            "Stale documents: %s, new documents: %s",
+            len(stale_document_ids),
+            len(new_documents),
         )
-        return stale_document_ids, new_document_schemas
+        return VaultChanges(
+            stale_document_ids=stale_document_ids,
+            new_documents=new_documents,
+        )
+
+    def _iter_markdown_files(self):
+        """Iterates vault markdown files while skipping hidden directories."""
+        for markdown_file in self.vault_path.rglob("*.md"):
+            if any(part.startswith(".") for part in markdown_file.parts):
+                continue
+            yield markdown_file
+
+    @staticmethod
+    def _is_modified(path: Path, indexed_at: datetime) -> bool:
+        """Checks whether a file changed after it was indexed."""
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime)
+        return indexed_at < modified_at
+
+    @staticmethod
+    def _read_markdown(path: Path) -> str:
+        """Reads a markdown file and returns an empty string on failure."""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Failed to read %s: %s", path, exc)
+            return ""
+
+    def _delete_stale_documents(
+        self,
+        document_repository: DocumentRepository,
+        changes: VaultChanges,
+        state: IndexingState,
+    ) -> None:
+        """Deletes documents that will be replaced by a newer version."""
+        count = len(changes.stale_document_ids)
+        if count == 0:
+            return
+
+        self._set_message(state, f"Deleting {count} stale documents...")
+        document_repository.delete_many(changes.stale_document_ids)
+
+    def _create_documents(
+        self,
+        document_repository: DocumentRepository,
+        changes: VaultChanges,
+        state: IndexingState,
+    ) -> list[DocumentResponse]:
+        """Creates new documents in the database and returns their DTOs."""
+        count = len(changes.new_documents)
+        self._set_message(state, f"Creating {count} new documents...")
+        return document_repository.create_many(changes.new_documents)
+
+    def _build_chunks(
+        self,
+        documents: list[DocumentResponse],
+        state: IndexingState,
+    ) -> list[ChunkCreate]:
+        """Splits documents, encodes chunks, and builds DTOs for persistence."""
+        document_ids, chunk_texts = self._split_documents(documents)
+        total_chunks = len(chunk_texts)
+
+        logger.info("Embedding %s chunks in batches of %s...", total_chunks, self.batch_size)
+        self._set_message(state, f"Embedding {total_chunks} chunks...")
+        embeddings = self._encode_chunks(chunk_texts, state)
+
+        self._set_message(state, f"Saving {total_chunks} chunks...")
+        return [
+            ChunkCreate(
+                document_id=document_id,
+                text=text,
+                embedding=embedding,
+            )
+            for document_id, text, embedding in zip(document_ids, chunk_texts, embeddings)
+        ]
 
     def _split_documents(
         self,
         documents: list[DocumentResponse],
     ) -> tuple[list[str], list[str]]:
-        """Разбивает документы на чанки."""
+        """Splits documents into chunks."""
         splitter = MarkdownTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
@@ -189,13 +215,14 @@ class Indexer:
         chunk_texts: list[str] = []
 
         for document in documents:
-            chunks = splitter.split_text(document.text)
-            for chunk_text in chunks:
+            for chunk_text in splitter.split_text(document.text):
                 document_ids.append(document.document_id)
                 chunk_texts.append(chunk_text)
 
         logger.info(
-            f"Разбито {len(documents)} документов на {len(chunk_texts)} чанков"
+            "Split %s documents into %s chunks",
+            len(documents),
+            len(chunk_texts),
         )
         return document_ids, chunk_texts
 
@@ -204,19 +231,39 @@ class Indexer:
         chunk_texts: list[str],
         state: IndexingState,
     ) -> list[list[float]]:
-        """Получает эмбеддинги для чанков батчами."""
+        """Gets embeddings for chunks in batches."""
         total = len(chunk_texts)
         chunk_embeddings: list[list[float]] = []
 
-        for i, texts in enumerate(chunked(chunk_texts, self.batch_size)):
+        for batch_index, texts in enumerate(chunked(chunk_texts, self.batch_size)):
             embeddings = self.embedder.embed_many(list(texts))
             chunk_embeddings.extend(embeddings.tolist())
 
-            processed = min((i + 1) * self.batch_size, total)
-            state.message = f"Эмбеддинг чанков: {processed}/{total}"
+            processed = min((batch_index + 1) * self.batch_size, total)
+            state.message = f"Embedding chunks: {processed}/{total}"
 
-            if i % 10 == 0:
-                logger.debug(f"Прогресс эмбеддинга: {processed}/{total}")
+            if batch_index % 10 == 0:
+                logger.debug("Embedding progress: %s/%s", processed, total)
 
-        logger.info(f"Эмбеддинг завершён: {len(chunk_embeddings)} векторов")
+        logger.info("Embedding finished: %s vectors", len(chunk_embeddings))
         return chunk_embeddings
+
+    @staticmethod
+    def _mark_running(state: IndexingState) -> None:
+        """Moves indexing state to running."""
+        state.status = "running"
+        state.started_at = datetime.now()
+        state.message = ""
+
+    @staticmethod
+    def _mark_done(state: IndexingState, message: str) -> None:
+        """Marks indexing as successfully finished."""
+        state.status = "done"
+        state.message = message
+        logger.info(message)
+
+    @staticmethod
+    def _set_message(state: IndexingState, message: str) -> None:
+        """Updates the user-facing progress message and logs it."""
+        state.message = message
+        logger.info(message)

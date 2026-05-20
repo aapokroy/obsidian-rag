@@ -1,4 +1,4 @@
-"""Пакет для работы с базой данных."""
+"""Database package exports."""
 from .database import Database
 from .models import (
     Document,

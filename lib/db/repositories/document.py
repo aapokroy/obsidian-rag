@@ -1,44 +1,28 @@
-"""Репозиторий для работы с документами."""
+"""Repository for indexed documents."""
+
+import logging
+import sqlite3
 import uuid
 
-import sqlite3
-
 from lib.db.models import Document
+from lib.db.repositories.base import BaseRepository
 from lib.schema import DocumentCreate, DocumentResponse
 
+logger = logging.getLogger("obsidian-rag")
 
-class DocumentRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+
+class DocumentRepository(BaseRepository):
+    """Repository for Obsidian documents."""
 
     def create_one(self, schema: DocumentCreate) -> DocumentResponse:
-        document = Document(
-            document_id=str(uuid.uuid4()),
-            path=schema.path,
-            text=schema.text,
-        )
-        self.conn.execute(
-            "INSERT INTO documents VALUES (?, ?, ?, ?)",
-            (
-                document.document_id,
-                document.path,
-                document.text,
-                document.created_at,
-            ),
-        )
-        self.conn.commit()
-        return DocumentResponse(
-            document_id=document.document_id,
-            path=document.path,
-            text=document.text,
-            created_at=document.created_at,
-        )
+        """Creates one document."""
+        return self.create_many([schema])[0]
 
     def create_many(
         self,
         schemas: list[DocumentCreate],
     ) -> list[DocumentResponse]:
-        """Создать множество документов и вернуть их представления."""
+        """Creates multiple documents and returns their DTOs."""
         documents = [
             Document(
                 document_id=str(uuid.uuid4()),
@@ -48,53 +32,71 @@ class DocumentRepository:
             for schema in schemas
         ]
 
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?)",
-            [
-                (
-                    d.document_id,
-                    d.path,
-                    d.text,
-                    d.created_at,
-                )
-                for d in documents
-            ],
-        )
-        self.conn.commit()
+        if not documents:
+            return []
 
-        return [
-            DocumentResponse(
-                document_id=d.document_id,
-                path=d.path,
-                text=d.text,
-                created_at=d.created_at,
+        with self.conn:
+            self.executemany(
+                """
+                INSERT OR REPLACE INTO documents (document_id, path, text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        document.document_id,
+                        document.path,
+                        document.text,
+                        document.created_at,
+                    )
+                    for document in documents
+                ],
             )
-            for d in documents
-        ]
+
+        logger.debug("Documents created: count=%s", len(documents))
+        return [self._to_response(document) for document in documents]
 
     def get_all(self) -> list[DocumentResponse]:
-        rows = self.conn.execute(
+        """Returns all documents from newest to oldest."""
+        rows = self.fetch_all(
             "SELECT * FROM documents ORDER BY created_at DESC",
-        ).fetchall()
-        documents = [
-            DocumentResponse(
-                document_id=row["document_id"],
-                path=row["path"],
-                text=row["text"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
-        return documents
+        )
+        return [self._row_to_response(row) for row in rows]
 
     def delete_many(self, document_ids: list[str]) -> int:
-        self.conn.executemany(
-            "DELETE FROM documents WHERE document_id = ?",
-            [(doc_id,) for doc_id in document_ids],
-        )
-        self.conn.commit()
+        """Deletes documents by id and returns the requested deletion count."""
+        if not document_ids:
+            return 0
+
+        with self.conn:
+            self.executemany(
+                "DELETE FROM documents WHERE document_id = ?",
+                [(document_id,) for document_id in document_ids],
+            )
+        logger.debug("Documents deleted: count=%s", len(document_ids))
         return len(document_ids)
 
     def delete_all(self) -> None:
-        self.conn.execute("DELETE FROM documents")
-        self.conn.commit()
+        """Deletes all documents and related chunks."""
+        with self.conn:
+            self.execute("DELETE FROM documents")
+        logger.debug("All documents deleted")
+
+    @staticmethod
+    def _to_response(document: Document) -> DocumentResponse:
+        """Converts a Document dataclass into DocumentResponse."""
+        return DocumentResponse(
+            document_id=document.document_id,
+            path=document.path,
+            text=document.text,
+            created_at=document.created_at,
+        )
+
+    @staticmethod
+    def _row_to_response(row: sqlite3.Row) -> DocumentResponse:
+        """Converts a SQLite row into DocumentResponse."""
+        return DocumentResponse(
+            document_id=row["document_id"],
+            path=row["path"],
+            text=row["text"],
+            created_at=row["created_at"],
+        )
